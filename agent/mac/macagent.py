@@ -451,7 +451,7 @@ class Instance:
         # v2：调度器只"标记待判断"，不自动点击；由模型看图后决定动作
         self.pending_wake = None
         # 运行时可变设置（面板可改，无需重启）
-        self.settings = {"guardIdle": 2.0, "changeGate": True}
+        self.settings = {"guardIdle": 2.0, "changeGate": True, "buyPolicy": "auto"}
         self.window_rect = (win["x"], win["y"], win["w"], win["h"])
         self.tmp_png = HERE / f".cache-{self.wid}.png"
         self.tmp_jpg = HERE / f".cache-{self.wid}.jpg"
@@ -1595,8 +1595,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(400, {"ok": False, "error": {"code": "E_BAD_REQUEST", "message": "guardIdle 非法"}})
             if "changeGate" in body:
                 inst.settings["changeGate"] = bool(body["changeGate"])
+            if "buyPolicy" in body:
+                policy = str(body["buyPolicy"])
+                if policy not in ("auto", "owned", "never"):
+                    return self._json(400, {"ok": False, "error": {
+                        "code": "E_BAD_REQUEST", "message": "buyPolicy 只能是 auto / owned / never"}})
+                inst.settings["buyPolicy"] = policy
             AGENT.push_log(inst, f"设置更新：guardIdle={inst.settings['guardIdle']}s "
-                                 f"changeGate={inst.settings['changeGate']}")
+                                 f"changeGate={inst.settings['changeGate']} "
+                                 f"buyPolicy={inst.settings['buyPolicy']}")
             AGENT.push_state(inst)
             return self._json(200, {"ok": True, "settings": inst.settings})
 
