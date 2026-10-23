@@ -347,6 +347,31 @@ case "find":
     jsonLine(["ok": true, "found": !matches.isEmpty, "count": matches.count,
               "image": [imgFull.w, imgFull.h], "matches": Array(matches.prefix(3))])
 
+case "hash":
+    // macd hash <image> → 8x8 灰度均值哈希（用于判断画面有无变化，零 token）
+    guard args.count >= 2 else { die("hash <image>") }
+    guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: args[1]) as CFURL, nil),
+          let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) else { die("读图失败") }
+    let side = 8
+    var rgba = [UInt8](repeating: 0, count: side * side * 4)
+    _ = rgba.withUnsafeMutableBytes { raw -> Bool in
+        guard let ctx = CGContext(data: raw.baseAddress, width: side, height: side, bitsPerComponent: 8,
+                                  bytesPerRow: side * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+        ctx.interpolationQuality = .low
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: side, height: side))
+        return true
+    }
+    var grays: [Double] = []
+    for i in stride(from: 0, to: rgba.count, by: 4) {
+        let r = Double(rgba[i]), g = Double(rgba[i+1]), b = Double(rgba[i+2])
+        grays.append((r * 0.299 + g * 0.587 + b * 0.114))
+    }
+    let avg = grays.reduce(0, +) / Double(grays.count)
+    var hashStr = ""
+    for v in grays { hashStr += v > avg ? "1" : "0" }
+    jsonLine(["ok": true, "hash": hashStr, "cells": side * side])
+
 case "sample":
     // macd sample <image> --pts "x1,y1;x2,y2;..." [--r 10]
     // 在指定像素点周围取平均色，用于按标定格子读地块状态。

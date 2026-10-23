@@ -446,6 +446,8 @@ class Instance:
         self.last_frame_at = 0.0
         self.ocr_blocks = []
         self.img_size = (0, 0)
+        self.frame_hash = None
+        self.frame_changed = False
         self.window_rect = (win["x"], win["y"], win["w"], win["h"])
         self.tmp_png = HERE / f".cache-{self.wid}.png"
         self.tmp_jpg = HERE / f".cache-{self.wid}.jpg"
@@ -475,6 +477,8 @@ class Instance:
                       for name, cfg in self.tasks.items()},
             "taskOrder": TASK_ORDER,
             "plotsUpdatedAt": getattr(self, "plots_updated_at", None),
+            "frameHash": getattr(self, "frame_hash", None),
+            "frameChanged": getattr(self, "frame_changed", False),
             "idleRounds": getattr(self, "idle_rounds", 0),
             "stats": self.stats,
             "page": self.page,
@@ -661,6 +665,15 @@ class Agent:
             return False
         inst.last_frame_at = time.time()
         inst.frame_mime = "image/jpeg" if jpg_ok else "image/png"
+        # 画面指纹：用于"画面没变就不叫醒模型"（零 token 的变化检测）
+        out, _ = self.mac._run("hash", str(inst.tmp_png))
+        try:
+            h = json.loads(out.strip().splitlines()[-1]).get("hash")
+        except (json.JSONDecodeError, IndexError, AttributeError):
+            h = None
+        if h:
+            inst.frame_changed = (inst.frame_hash is not None and h != inst.frame_hash)
+            inst.frame_hash = h
         self.frame_seq += 1
         import base64
         self.broadcast({"t": "frame", "instance": inst.id, "seq": self.frame_seq,
