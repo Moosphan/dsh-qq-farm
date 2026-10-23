@@ -251,6 +251,30 @@ def load_task_state(instance_id):
     return state
 
 
+def _settings_path(platform):
+    return STATE_DIR / ("settings-%s.json" % platform)
+
+
+def load_settings(platform):
+    try:
+        data = json.loads(_settings_path(platform).read_text("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_settings(platform, settings, click_mode=None):
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        blob = dict(settings)
+        if click_mode:
+            blob["clickMode"] = click_mode
+        _settings_path(platform).write_text(json.dumps(blob, ensure_ascii=False, indent=2),
+                                            encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _daily_path(platform):
     return STATE_DIR / ("stats-%s.json" % platform)
 
@@ -527,6 +551,12 @@ class Instance:
         self.pending_wake = None
         # 运行时可变设置（面板可改，无需重启）
         self.settings = {"guardIdle": 2.0, "changeGate": True, "buyPolicy": "auto"}
+        # 设置持久化：重启/换窗口后不再回到默认（否则用户设的 guardIdle=0 会被悄悄改回 2）
+        try:
+            self.settings.update({k: v for k, v in load_settings(self.platform).items()
+                                  if k in ("guardIdle", "changeGate", "buyPolicy", "fertilize")})
+        except (TypeError, ValueError):
+            pass
         self.window_rect = (win["x"], win["y"], win["w"], win["h"])
         self.tmp_png = HERE / f".cache-{self.wid}.png"
         self.tmp_jpg = HERE / f".cache-{self.wid}.jpg"
@@ -659,6 +689,11 @@ class Agent:
         guard = float(inst.settings.get("guardIdle", self.guard_idle))
         idle = self.mac.idle_seconds()
         if idle < guard:
+            # warp 点击会挪动真实光标，自己刚点的那几下会被算成"用户在活动"→ 自己把自己挡住。
+            # 所以：如果空闲时间短是因为**我们刚点过**，就不算占用。
+            since_own = time.time() - getattr(self, "last_action_at", 0)
+            if since_own <= guard + 1.0:
+                return None
             return f"用户正在使用电脑（空闲 {idle:.1f}s < {guard:.0f}s）"
         return None
 
@@ -1164,6 +1199,7 @@ class Agent:
         return True, f"已点选种子 x{count}，等待自动种满"
 
     def _click_xy(self, inst, ix, iy, wait=2.0, verify=True, activate=True):
+        self.last_action_at = time.time()
         """按图像坐标点一下（先换算再激活再单点）。
 
         verify=False 时不再抓帧（抓一帧要截图+sips+hash+OCR ≈1.5s，盲点流程全靠它提速）。
@@ -1340,6 +1376,7 @@ class Agent:
 
     # ── 好友：偷菜 / 帮忙 ─────────────────────────────────────────────
     def _tap_text(self, inst, text, wait=1.6, min_conf=0.45, exact=True, verify=True):
+        self.last_action_at = time.time()
         """点一个 OCR 文本块，返回 (ok, block, why)。
 
         exact=True 时要求文字完全相等（避免把「好友」点成「好友求助」）。
@@ -1469,6 +1506,8 @@ class Agent:
         if not any(k == "仓库" for b in inst.ocr_blocks for k in [str(b["text"]).strip()]):
             self._click_xy(inst, POS_HOME[0], POS_HOME[1], wait=0.8)
             self.grab(inst)
+        # 收尾：确保回到主页（好友农场/列表都要退出来）
+        self._ensure_main(inst, tries=3)
         inst.stats["steal"] = inst.stats.get("steal", 0) + stole
         inst.stats["help"] = inst.stats.get("help", 0) + helped
         if stole:
@@ -1787,7 +1826,7 @@ class Agent:
             return False, "页面不在白名单"
 
         # ⓪ 进错页先自己退回来（SVIP/活动/仓库这类误入页面）
-        if page not in ("main", "popup_notice", "popup_generic", "task_panel", "friend", "friend_farm"):
+        if page not in ("main", "popup_notice", "popup_generic", "task_panel"):
             okm, whym = self._ensure_main(inst)
             if okm:
                 page = inst.page
@@ -2351,6 +2390,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(400, {"ok": False, "error": {
                         "code": "E_BAD_REQUEST", "message": "buyPolicy 只能是 auto / owned / never"}})
                 inst.settings["buyPolicy"] = policy
+            save_settings(inst.platform, inst.settings, AGENT.click_mode)
             AGENT.push_log(inst, f"设置更新：guardIdle={inst.settings['guardIdle']}s "
                                  f"changeGate={inst.settings['changeGate']} "
                                  f"buyPolicy={inst.settings['buyPolicy']}")
