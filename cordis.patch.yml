@@ -1,0 +1,19 @@
+# dsh-qq-farm bundle 层：插入插件条目。
+# 由 `dsh plugin --profile web add <pkg>` 自动装配（包声明了 dsh.bundle.patch），
+# 无需手动编辑 profile 里的任何文件；`dsh plugin remove` 时自动移除。
+- insert:
+    - id: qq-farm
+      name: 'dsh-qq-farm'
+      config:
+        agent:
+          # managed: 插件在宿主机上托管 Agent 进程（同机部署）
+          # remote : 连一台外部 Agent（跨机部署，需填 url + token）
+          mode: managed
+          url: 'http://127.0.0.1:4571'
+          token: ''
+          # 留空则按 url 的端口自动使用内置 Mock Agent。
+          # M1 接入 Windows 真实引擎后改为：
+          #   command: ['python', '-m', 'dsh_farm_agent', '--port', '4571']
+        ui:
+          defaultFps: 4
+          maxFrameWidth: 720

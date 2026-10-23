@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CLICKS:0</title>
+<style>
+  body{margin:0;background:#111;font-family:-apple-system;color:#eee;display:flex;
+       flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:24px}
+  #n{font-size:96px;font-weight:800;color:#4ade80}
+  #btn{width:70%;height:220px;font-size:40px;border:0;border-radius:24px;
+       background:#1d4ed8;color:#fff;cursor:pointer}
+  #btn:active{background:#2563eb}
+  .hint{color:#888;font-size:14px}
+</style>
+<div id="n">0</div>
+<button id="btn">点我（后台点击测试）</button>
+<div class="hint">窗口标题会变成 CLICKS:n —— 用标题即可判断点击是否送达</div>
+<script>
+  let n = 0
+  const el = document.getElementById('n')
+  const btn = document.getElementById('btn')
+  const bump = () => { n += 1; el.textContent = n; document.title = 'CLICKS:' + n }
+  btn.addEventListener('click', bump)
+  // 记录 hover，用于判断鼠标是否真的"经过"
+  window.__hover = 0
+  btn.addEventListener('mouseenter', () => { window.__hover += 1 })
+</script>

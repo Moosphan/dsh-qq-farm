@@ -1,0 +1,52 @@
+{
+  "name": "dsh-qq-farm",
+  "version": "0.1.0",
+  "description": "QQ 经典农场自动化助手面板 — DeepSeek Harness 插件（面板 + 控制面 + LLM 工具），自动化由独立 Farm Agent 承担",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "shared",
+    "agent",
+    "docs",
+    "scripts",
+    "cordis.patch.yml"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "qq-farm",
+    "automation",
+    "opencv"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "mock": "node agent/mock/index.js --port 4571 --instances 2",
+    "check": "node scripts/check.mjs"
+  },
+  "license": "MIT"
+}
