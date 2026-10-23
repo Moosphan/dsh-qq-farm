@@ -31,6 +31,7 @@ HERE = Path(__file__).resolve().parent
 MACD = HERE / "bin" / "macd"
 TEMPLATES = HERE / "templates"
 ICON_CLOSE = TEMPLATES / "close_x.png"
+ICON_HELP = TEMPLATES / "help.png"      # 好友列表/头像条上的「小人铲土」= 需要帮忙
 
 # 地块网格在截图中的相对位置（比例，适配窗口缩放）。
 # 4 列 × 6 行纵向排布；bbox 由「格内颜色最一致」自动校准得到（真机 824x1542 截图）：
@@ -99,13 +100,24 @@ DEFAULT_TASKS = {
     "restart":       {"enabled": False, "intervalSec": 14400, "label": "定时重启窗口"},
 }
 # 已经真正实现的任务（其余会返回 E_UNSUPPORTED）
-IMPLEMENTED_TASKS = {"main", "land_scan"}
+IMPLEMENTED_TASKS = {"main", "land_scan", "friend", "reward", "grass", "timed_harvest"}
+
+# 好友/任务面板用到的标签（只有这些会被点，其余一律不点）
+NAV_FRIEND = ["好友"]                    # 底部导航「好友」
+LABEL_VISIT = "拜访"                     # 好友列表里的拜访按钮
+LABEL_STEAL = "一键偷取"                 # 好友农场：一键偷菜
+LABEL_HELP = "一键务农"                  # 好友农场：一键务农 = 帮忙（除草/杀虫），加经验
+LABEL_HOME = "回家"                      # 好友农场：回家
+LABEL_CLAIM = "领取"                     # 任务面板：领取奖励
+HELP_LABELS = ["除草", "帮忙", "浇水", "一键帮忙"]   # 好友求助/帮忙
+TASK_PANEL_SIGNS = ["成长任务", "每日任务", "一键种植"]
 CONTROL_ACTIONS = ["start", "pause", "resume", "stop", "run_once", "repair", "restart"]
 
 # ── 页面与可点击白名单 ───────────────────────────────────────────────
 # 只允许点这些文字，其余一律不点（破坏性按钮如"出售/批量出售"永不进入白名单）
 CLICKABLE = {
     "一键务农": "harvest_all",
+    "一键施肥": "fertilize",
     "一键收获": "harvest_all",
     "直接领取": "claim",
     "确定": "confirm",
@@ -129,11 +141,18 @@ PAGE_SIGNATURES = [
     ("popup_notice", ["游戏更新公告", "更新公告", "点击空白处"]),
     ("popup_generic", ["领取奖励", "恭喜获得", "点击任意处", "我知道了",
                        "直接领取", "分享后可以获得", "化肥礼包"]),
+    ("task_panel", ["成长任务", "每日任务"]),
+    ("svip", ["SVIP特权", "会员礼包", "开通会员", "专属商城"]),
+    ("event_shop", ["兑换商店", "店铺等级", "营业额", "制作奶茶"]),
+    # 主页先判：主页有「带田园犬回家」气泡，不能因为含「回家」就当成好友农场
+    ("main", ["仓库", "商店", "图鉴", "一键务农", "一键收获", "好友求助", "等级提升", "可扩建"]),
+    ("friend_farm", ["回家", "一键偷取"]),
     ("warehouse", ["批量出售", "批量锁定", "格子上限"]),
     ("shop", ["确认购买", "购买", "售价"]),
-    ("friend", ["好友农场", "偷菜", "帮忙"]),
-    ("main", ["仓库", "商店", "图鉴", "一键务农", "一键收获", "好友求助", "等级提升", "可扩建"]),
+    ("friend", ["拜访", "邀请", "好友农场", "偷菜"]),
 ]
+# 各页面判定需要的命中条数（默认 2）
+PAGE_MIN_HITS = {"main": 3}
 
 # 主界面上「可点且安全」的动作按钮（按优先级）
 HARVEST_LABELS = ["一键收获"]
@@ -208,11 +227,17 @@ def _task_state_path(instance_id):
 
 
 def load_task_state(instance_id):
-    """读该实例的任务配置（首次运行用 DEFAULT_TASKS，之后持久化到 ~/.dsh-farm）。"""
+    """读该实例的任务配置（首次运行用 DEFAULT_TASKS，之后持久化到 ~/.dsh-farm）。
+
+    窗口重建后 instance_id（平台-wid）会变 → 先找同名文件，再退回上一次的
+    「模板」（tasks-last.json），这样用户开过的常驻任务不会因为窗口重开而丢。
+    """
     state = {name: {"enabled": cfg["enabled"], "intervalSec": cfg["intervalSec"],
                     "nextRun": None, "lastRun": None, "lastResult": None}
              for name, cfg in DEFAULT_TASKS.items()}
     path = _task_state_path(instance_id)
+    if not path.exists() and _task_last_path().exists():
+        path = _task_last_path()
     if path.exists():
         try:
             saved = json.loads(path.read_text("utf-8"))
@@ -226,11 +251,16 @@ def load_task_state(instance_id):
     return state
 
 
+def _task_last_path():
+    return STATE_DIR / "tasks-last.json"
+
+
 def save_task_state(instance_id, tasks):
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        _task_state_path(instance_id).write_text(
-            json.dumps(tasks, ensure_ascii=False, indent=2), encoding="utf-8")
+        blob = json.dumps(tasks, ensure_ascii=False, indent=2)
+        _task_state_path(instance_id).write_text(blob, encoding="utf-8")
+        _task_last_path().write_text(blob, encoding="utf-8")
     except OSError as e:
         print(json.dumps({"level": "warn", "msg": f"任务配置保存失败({e})"}))
 
@@ -272,6 +302,16 @@ class Mac:
                 continue
         return rows
 
+    def focus_game_app(self):
+        """把 QQ 小程序窗口调到前台（窗口被最小化时 winlist 会看不到）。"""
+        for app in ("QQEXMiniProgram", "WeChat", "微信"):
+            r = subprocess.run(["osascript", "-e",
+                                f'tell application "System Events" to set frontmost of process "{app}" to true'],
+                               capture_output=True, text=True)
+            if r.returncode == 0:
+                return app
+        return None
+
     def find_game_window(self, title_contains="农场"):
         """找游戏窗口。
 
@@ -292,7 +332,8 @@ class Mac:
             owner = w.get("owner", "")
             if not ("小程序" in owner or "MiniProgram" in owner or "微信" in owner or "WeChat" in owner):
                 continue
-            if w.get("w", 0) >= 300 and w.get("h", 0) >= 500:
+            # 竖屏比例：农场是 412×771；微信聊天窗 876×614 这类横窗不能当游戏
+            if w.get("w", 0) >= 300 and w.get("h", 0) >= 500 and w.get("h", 0) > w.get("w", 0) * 1.3:
                 cands.append(w)
         if cands:
             w = cands[0]
@@ -328,7 +369,7 @@ class Mac:
                 blocks.append(row)
         return blocks, None
 
-    def click(self, pid, sx, sy, mode="ghost", wid=None, repeat=2, gap=0.25):
+    def click(self, pid, sx, sy, mode="warp", wid=None, repeat=2, gap=0.25):
         """点击。repeat>1 用于绕过 macOS 的 acceptsFirstMouse=false：
         第一次点击只激活窗口，第二次才真正落到控件上。"""
         if self.dry_run:
@@ -474,7 +515,14 @@ class Instance:
             "profile": self.profile,
             "plots": self.plots,
             "tasks": {name: {"enabled": cfg["enabled"], "intervalSec": cfg["intervalSec"],
-                             "nextRun": cfg["nextRun"], "lastRun": cfg["lastRun"],
+                             # nextRun 统一给 ISO 字符串（面板要显示 HH:MM），
+                             # 再附一个 nextInSec 便于显示「x 分钟后」
+                             "nextRun": (time.strftime("%Y-%m-%dT%H:%M:%S",
+                                                       time.localtime(cfg["nextRun"]))
+                                         if cfg["nextRun"] else None),
+                             "nextInSec": (max(0, int(cfg["nextRun"] - time.time()))
+                                           if cfg["nextRun"] else None),
+                             "lastRun": cfg["lastRun"],
                              "lastResult": cfg["lastResult"],
                              "label": DEFAULT_TASKS[name]["label"],
                              "implemented": name in IMPLEMENTED_TASKS}
@@ -492,6 +540,9 @@ class Instance:
 
 
 class Agent:
+    # 点击模式："warp"=真实光标（可靠，光标会动）；"ghost"=幽灵点击（不挪光标，但实测会失效）
+    click_mode = "warp"
+
     def __init__(self, mac, fps=2.0, interval=2.5, allow_plant=True,
                  guard_idle=2.0, allow_focus_steal=False):
         self.allow_plant = allow_plant
@@ -631,6 +682,12 @@ class Agent:
         """重新发现窗口；窗口重建后 wid/pid 会变，必须每次核对。"""
         win = self.mac.find_game_window()
         if win is None:
+            # 窗口被最小化/切到后台时 winlist 会空 → 先把它调到前台再找一次
+            app = self.mac.focus_game_app()
+            if app:
+                time.sleep(0.6)
+                win = self.mac.find_game_window()
+        if win is None:
             return None
         iid = f"{win['platform']}-{win['wid']}"
         inst = self.instances.get(iid)
@@ -640,6 +697,16 @@ class Agent:
             how = win.get("matched_by", "title")
             note = "（标题被系统隐去，按 owner 匹配；授权屏幕录制后会更稳）" if how == "owner" else ""
             self.push_log(inst, f"发现游戏窗口 wid={win['wid']} pid={win['pid']} {win['w']}x{win['h']}{note}")
+            # 有启用的任务就自动开跑：agent 重启后不该静默停摆（否则面板显示「空闲、下次已过期」）
+            if any(cfg.get("enabled") for cfg in inst.tasks.values()):
+                inst.stop_flag.clear()
+                inst.state = "running"
+                inst.current_task = "main"
+                inst.rev += 1
+                inst.worker = threading.Thread(target=self.run_worker, args=(inst, "main", False),
+                                               daemon=True)
+                inst.worker.start()
+                self.push_log(inst, "自动恢复调度：有启用任务，直接进入运行中")
         else:
             inst.pid = win["pid"]
             inst.window_rect = (win["x"], win["y"], win["w"], win["h"])
@@ -861,7 +928,7 @@ class Agent:
                 self.push_log(inst, "巡查中断：用户开始使用电脑，立即让出")
                 return False, "用户接管，巡查中断"
             self.mac.activate(inst.pid)
-            self.mac.click(inst.pid, sx, sy, mode="ghost", wid=inst.wid, repeat=1)
+            self.mac.click(inst.pid, sx, sy, mode=self.click_mode, wid=inst.wid, repeat=1)
             # 轮询等弹窗出现（最多 ~2.4s），比固定 sleep 稳
             info = {"crop": None, "countdown": None, "empty": True, "unopened": False}
             for _ in range(6):
@@ -887,7 +954,7 @@ class Agent:
                 xs = x0 + (xbtn["x"] + xbtn["w"] / 2) * w / pw
                 ys = y0 + (xbtn["y"] + xbtn["h"] / 2) * h / ph
                 if self._in_window(inst, xs, ys):
-                    self.mac.click(inst.pid, xs, ys, mode="ghost", wid=inst.wid, repeat=1)
+                    self.mac.click(inst.pid, xs, ys, mode=self.click_mode, wid=inst.wid, repeat=1)
                     time.sleep(0.4)
         inst.plots_updated_at = time.strftime("%Y-%m-%dT%H:%M:%S")
         self.push_state(inst)
@@ -903,14 +970,81 @@ class Agent:
         except (ValueError, AttributeError):
             return None
 
+    def _seed_buttons(self, inst):
+        """种子栏里的候选种子：种子栏中间那条带上的纯数字角标。
+
+        必须先用「一键种植」这个标签确认种子栏真的开着 —— 否则商城/扩建弹窗里的
+        数字（原价 80000、优惠价 56000…）会被误当成种子角标，点下去就买种子了。
+        """
+        texts = [str(b.get("text", "")).strip() for b in inst.ocr_blocks]
+        if not any("一键种植" in t for t in texts):
+            return []
+        h = inst.img_size[1]
+        lo, hi = h * 0.645, h * 0.735          # 角标那条窄带（实测 y≈1080/1542）
+        nums = []
+        for b in inst.ocr_blocks:
+            t = str(b.get("text", "")).strip()
+            if t.isdigit() and lo <= b["y"] <= hi and len(t) <= 3:
+                nums.append((int(t), b))
+        return sorted(nums, key=lambda z: z[1]["x"])
+
+    def _open_seed_bar(self, inst, cx, cy):
+        """点一格，判断这一格到底是什么状态。
+
+        返回 ("seeds", nums)  种子栏出现（=真的是空地）
+             ("planted", text) 弹出的是倒计时/作物信息（=其实已经种上了）
+             ("none", None)    什么都没有（多半是「一键种植」没开）
+        """
+        pw, ph = inst.img_size
+        x0, y0, w, h = inst.window_rect
+        tsx = x0 + cx * w / pw
+        tsy = y0 + cy * h / ph
+        self.mac.activate(inst.pid)
+        self.refresh_windows()
+        tsx = x0 + cx * w / pw
+        tsy = y0 + cy * h / ph
+        self.mac.click(inst.pid, tsx, tsy, mode=self.click_mode, wid=inst.wid, repeat=1)
+        time.sleep(1.6)
+        if not self.grab(inst):
+            return "none", None
+        nums = self._seed_buttons(inst)
+        if nums:
+            return "seeds", nums
+        info = self._parse_plot_popup(inst.ocr_blocks)
+        if info["crop"] or info["countdown"]:
+            return "planted", str(info["crop"] or info["countdown"])
+        return "none", None
+
+    def _enable_one_click_plant(self, inst):
+        """打开「一键种植」开关（确认弹窗文字读不到，靠位置点确认）。"""
+        btn = next((b for b in inst.ocr_blocks if "一键种植" in str(b.get("text", ""))), None)
+        if btn is None:
+            return False
+        pw, ph = inst.img_size
+        x0, y0, w, h = inst.window_rect
+        bsx = x0 + (btn["x"] + btn["w"] / 2) * w / pw
+        bsy = y0 + (btn["y"] + btn["h"] / 2) * h / ph
+        self.mac.click(inst.pid, bsx, bsy, mode=self.click_mode, wid=inst.wid, repeat=1)
+        time.sleep(1.6)
+        csx = x0 + 573 * w / pw
+        csy = y0 + 880 * h / ph
+        self.mac.click(inst.pid, csx, csy, mode=self.click_mode, wid=inst.wid, repeat=1)
+        time.sleep(1.8)
+        return True
+
     def plant(self, inst, seed="auto"):
         """原子操作：种植。
 
         流程（已实测的 UI 事实）：
           1. 找空地（cvhelper 分类为 empty）
           2. 点空地 → 底部弹出种子栏（每格带数量角标）
-          3. 选一个种子：auto=数量最多（背包主力），event=数量最少（通常是新买的活动种）
+          3. 选一个种子：auto=数量最多（背包主力），event=数量最少（通常是新买的活动种），
+             传数字（如 "18"）= 选数量角标正好是这个数的种子
           4. 选中后游戏会自动种满所有空地
+
+        注意：**刚种下的种子和空地在画面上长得一样**（种子埋在土坑里），
+        cvhelper 会把它们都判成 empty。所以点开这一格如果弹出的是倒计时/作物
+        信息，说明这格已经种上了 → 换下一格再试，不要直接失败。
         """
         if self.user_busy_reason(inst):
             return False, "用户正在使用电脑，暂缓"
@@ -926,65 +1060,448 @@ class Agent:
         empties = [c for c in cells if c.get("kind") == "empty" and c.get("cx")]
         if not empties:
             return True, f"识别到 {len(cells)} 格，确实没有空地"
-        pw, ph = inst.img_size
-        x0, y0, w, h = inst.window_rect
-        # 选离田地几何中心最近的空地：避免点到建筑/装饰（会跳到活动页）
+        # 从田地中心向外试，最多 6 格（避开建筑/装饰，也避开"已经种了但看着像空地"的格子）
         cx0 = sum(c["cx"] for c in cells) / len(cells)
         cy0 = sum(c["cy"] for c in cells) / len(cells)
-        target = min(empties, key=lambda c: (c["cx"] - cx0) ** 2 + (c["cy"] - cy0) ** 2)
-        tsx = x0 + target["cx"] * w / pw
-        tsy = y0 + target["cy"] * h / ph
-        self.mac.activate(inst.pid)
-        self.mac.click(inst.pid, tsx, tsy, mode="ghost", wid=inst.wid, repeat=1)
-        time.sleep(1.6)
-        if not self.grab(inst):
-            return False, "抓帧失败"
-        # 种子栏：屏幕下半部的纯数字角标
-        nums = []
-        for b in inst.ocr_blocks:
-            t = str(b.get("text", "")).strip()
-            if t.isdigit() and b["y"] > inst.img_size[1] * 0.62:
-                nums.append((int(t), b))
-        if not nums:
-            # 兜底：尝试开启「一键种植」后再试一次（开关关闭时种子栏不会出现）
-            btn = next((b for b in inst.ocr_blocks if "一键种植" in str(b.get("text", ""))), None)
-            if btn is None:
+        empties.sort(key=lambda c: (c["cx"] - cx0) ** 2 + (c["cy"] - cy0) ** 2)
+        nums, tried_planted = None, 0
+        for target in empties[:6]:
+            state, payload = self._open_seed_bar(inst, target["cx"], target["cy"])
+            if state == "seeds":
+                nums = payload
+                break
+            if state == "planted":
+                tried_planted += 1
+                self.push_log(inst, f"({target['row']},{target['col']}) 看着像空地，其实已种"
+                                    f"（{payload}），换下一格", level="debug")
+                continue
+        if nums is None:
+            # 种子栏没出现：可能「一键种植」没开 → 开一次再试最近的一格
+            if not self._enable_one_click_plant(inst):
+                if tried_planted:
+                    return True, f"试了 {tried_planted} 格都是已种状态，没有真正可种的地"
                 return False, "种子栏没出现，且找不到「一键种植」按钮"
-            bsx = x0 + (btn["x"] + btn["w"] / 2) * w / pw
-            bsy = y0 + (btn["y"] + btn["h"] / 2) * h / ph
-            self.mac.click(inst.pid, bsx, bsy, mode="ghost", wid=inst.wid, repeat=1)
-            time.sleep(1.6)
-            # 确认弹窗：文字读不到（遮罩），点已知的「确认」位置
-            csx = x0 + 573 * w / pw
-            csy = y0 + 880 * h / ph
-            self.mac.click(inst.pid, csx, csy, mode="ghost", wid=inst.wid, repeat=1)
-            time.sleep(1.8)
-            if not self.grab(inst):
-                return False, "开启一键种植后抓帧失败"
-            # 重新点空地
-            self.mac.click(inst.pid, tsx, tsy, mode="ghost", wid=inst.wid, repeat=1)
-            time.sleep(1.8)
-            if not self.grab(inst):
-                return False, "抓帧失败"
-            nums = []
-            for b in inst.ocr_blocks:
-                t = str(b.get("text", "")).strip()
-                if t.isdigit() and b["y"] > inst.img_size[1] * 0.62:
-                    nums.append((int(t), b))
-            if not nums:
+            target = empties[min(tried_planted, len(empties) - 1)]
+            state, payload = self._open_seed_bar(inst, target["cx"], target["cy"])
+            if state != "seeds":
+                if state == "planted":
+                    return True, "已开启一键种植，但试到的格子都已种上（种子阶段肉眼与空地一致）"
                 return False, "已开启一键种植，但种子栏仍未出现"
+            nums = payload
         nums.sort(key=lambda x: x[0])
-        if seed == "event":
-            pick = nums[0]          # 数量最少 = 新买的活动种子
-        else:
-            pick = nums[-1]         # 数量最多 = 背包主力种子
+        pick = None
+        seed_s = str(seed).strip()
+        if seed_s.isdigit():                      # 明确指定数量角标（选那个种子）
+            want = int(seed_s)
+            pick = next((t for t in nums if t[0] == want), None)
+            if pick is None:
+                return False, f"种子栏里没有数量为 {want} 的种子（现有 {[c for c, _ in nums]}）"
+        if pick is None:
+            pick = nums[0] if seed_s == "event" else nums[-1]
         count, box = pick
+        pw, ph = inst.img_size
+        x0, y0, w, h = inst.window_rect
         bsx = x0 + (box["x"] + box["w"] / 2) * w / pw
         bsy = y0 + (box["y"] + box["h"] / 2) * h / ph
-        self.mac.click(inst.pid, bsx, bsy, mode="ghost", wid=inst.wid, repeat=1)
+        self.mac.click(inst.pid, bsx, bsy, mode=self.click_mode, wid=inst.wid, repeat=1)
         time.sleep(2.5)
         self.push_log(inst, f"种植：选择种子 x{count}（策略 {seed}），已点选")
         return True, f"已点选种子 x{count}，等待自动种满"
+
+    def _click_xy(self, inst, ix, iy, wait=2.0, verify=True, activate=True):
+        """按图像坐标点一下（先换算再激活再单点）。
+
+        verify=False 时不再抓帧（抓一帧要截图+sips+hash+OCR ≈1.5s，盲点流程全靠它提速）。
+        """
+        sx, sy = self.to_screen(inst, ix, iy)
+        if not self._in_window(inst, sx, sy):
+            return False, "点击点越界"
+        if activate:
+            self.mac.activate(inst.pid)
+        self.mac.click(inst.pid, sx, sy, mode=self.click_mode, wid=inst.wid, repeat=1)
+        time.sleep(wait)
+        if not verify:
+            return True, "已点击(未校验)"
+        ok = self.grab(inst)
+        return ok, "已点击"
+
+    def _friend_rows(self, inst):
+        """从好友列表页解析 [(好友名, 拜访按钮)]，按 y 排序。"""
+        visits = [b for b in inst.ocr_blocks if str(b["text"]).strip() == LABEL_VISIT]
+        rows = []
+        for v in visits:
+            vy = v["y"] + v["h"] / 2
+            name = ""
+            for b in inst.ocr_blocks:
+                t = str(b["text"]).strip()
+                by = b["y"] + b["h"] / 2
+                if abs(by - vy) < 26 and b["x"] + b["w"] < v["x"] - 40 \
+                        and t and not t.isdigit() and "QQ" not in t and "经典农场" not in t:
+                    if len(t) > len(name):
+                        name = t
+            rows.append((name, v))
+        rows.sort(key=lambda r: r[1]["y"])
+        return rows
+
+    def _bottom_friends(self, inst):
+        """好友农场底部的「好友头像条」：[(昵称, x, y)]（y 用头像中心）。
+
+        在这条上点另一个头像就能直接切到那家农场，不用先回家。
+        """
+        out = []
+        h = inst.img_size[1]
+        for b in inst.ocr_blocks:
+            t = str(b["text"]).strip()
+            if not t or t.isdigit():
+                continue
+            if "QQ" in t or "经典农场" in t or "ID:" in t:
+                continue
+            if h * 0.88 < b["y"] < h * 0.96 and b["w"] < 200:
+                out.append((t, int(b["x"] + b["w"] / 2), int(b["y"] - h * 0.028)))
+        out.sort(key=lambda r: r[1])
+        return out
+
+    def _farm_header_name(self, inst):
+        """好友农场页头部的好友昵称。"""
+        best = ""
+        for b in inst.ocr_blocks:
+            t = str(b["text"]).strip()
+            if not t or t.isdigit() or "QQ" in t or "经典农场" in t:
+                continue
+            if 150 < b["y"] < 260 and b["w"] < 260 and len(t) > len(best):
+                best = t
+        return best
+
+    def _cv_python(self):
+        """找带 cv2/numpy 的 Python（cvhelper 用）。"""
+        for cand in (os.environ.get("QQFARM_CV_PYTHON"), "/usr/local/bin/python3",
+                     "/opt/homebrew/bin/python3"):
+            if cand and Path(cand).exists():
+                return cand
+        return None
+
+    def _icon_matches(self, inst, tpl, threshold=0.62):
+        """模板匹配（走 cvhelper --icons，能用 cv2 一次找全所有图标）。
+
+        macd find 只返回分数最高的那一个图标（多尺度三连），好友列表里 5 个图标
+        只能找到 1 个，所以这里改走 cvhelper。
+        """
+        py = self._cv_python()
+        helper = HERE / "cvhelper.py"
+        if py is None or not helper.exists():
+            return []
+        cmd = [py, str(helper), "--icons", str(inst.tmp_png), "--thr", str(threshold)]
+        if tpl is not None and Path(tpl) != ICON_HELP:
+            cmd += ["--tpl", str(tpl)]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            data = json.loads(r.stdout.strip().splitlines()[-1])
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError, IndexError):
+            return []
+        if not data.get("ok"):
+            return []
+        return [(float(i["cx"]), float(i["cy"]), float(i["score"])) for i in data.get("icons") or []]
+
+    def _rows_needing_help(self, inst):
+        """好友列表里「有铲土图标」的行：[(名字, 拜访按钮)]，按 y 排序。"""
+        icons = self._icon_matches(inst, ICON_HELP)
+        if not icons:
+            return []
+        out = []
+        for (name, b) in self._friend_rows(inst):
+            cy = b["y"] + b["h"] / 2
+            for (x, y, _) in icons:
+                if abs(y - cy) < 55 and 330 < x < 470:
+                    out.append((name, b))
+                    break
+        return out
+
+    # ── 页面纠偏：点错了自己退回来 ─────────────────────────────────────
+    def _ensure_main(self, inst, tries=4, timeout=2.5):
+        """确保回到农场主页；进错页（SVIP/仓库/活动/好友）就依次尝试退出。
+
+        返回 (是否在主页, 说明)。退出手段按安全顺序：
+          ① OCR 里的「关闭 / 返回 / 回家 / 我知道了」 ② 右上角 × 图标（模板匹配）
+        红线：绝不点「开通会员 / 分享 / 购买 / 出售」这类按钮。
+        """
+        for i in range(tries):
+            if not self.grab(inst):
+                return False, "抓帧失败"
+            page = inst.page
+            if page == "main":
+                return True, "已在主页"
+            # ① 文字按钮
+            for label in ("关闭", "返回", "回家", "我知道了", "取消"):
+                if self.find_block(inst, label, min_conf=0.4):
+                    self._tap_text(inst, label, wait=0.9, verify=False)
+                    break
+            else:
+                # ② × 图标
+                hit = self.mac.find_icon(str(inst.tmp_png), str(ICON_CLOSE), threshold=0.78)
+                if hit:
+                    self._click_xy(inst, hit["cx"], hit["cy"], wait=0.9, verify=False)
+                else:
+                    # ③ 点空白处（弹窗通用关法）
+                    self._close_popup(inst)
+            self.grab(inst)
+        ok = inst.page == "main"
+        if not ok:
+            self.push_log(inst, f"页面纠偏失败：当前仍是「{inst.page}」", level="warn")
+        return ok, ("已在主页" if ok else f"仍是 {inst.page}")
+
+    # ── 好友：偷菜 / 帮忙 ─────────────────────────────────────────────
+    def _tap_text(self, inst, text, wait=1.6, min_conf=0.45, exact=True, verify=True):
+        """点一个 OCR 文本块，返回 (ok, block, why)。
+
+        exact=True 时要求文字完全相等（避免把「好友」点成「好友求助」）。
+        """
+        block = None
+        for b in inst.ocr_blocks:
+            t = str(b["text"]).strip()
+            if b["conf"] < min_conf:
+                continue
+            if (t == text) if exact else (text in t):
+                if block is None or b["conf"] > block["conf"]:
+                    block = b
+        if block is None:
+            return False, None, f"没找到「{text}」"
+        ix, iy = block["x"] + block["w"] / 2, block["y"] + block["h"] / 2
+        sx, sy = self.to_screen(inst, ix, iy)      # 用截图那一刻的窗口矩形换算
+        if not self._in_window(inst, sx, sy):
+            return False, block, f"「{text}」点击点越界"
+        before = self.signature(inst)
+        # 与 /click 原语保持一致：activate 后立刻单点（refresh 后再点反而会丢）
+        self.mac.activate(inst.pid)
+        self.mac.click(inst.pid, sx, sy, mode=self.click_mode, wid=inst.wid, repeat=1)
+        time.sleep(wait)
+        ok = self.grab(inst) if verify else True
+        if ok:
+            inst.page = self.classify(inst)
+        changed = ok and verify and self.signature(inst) != before
+        self.push_log(inst, f"好友流程：点「{text}」({ix:.0f},{iy:.0f})→({sx:.0f},{sy:.0f}) "
+                            f"{'画面变化' if changed else '无变化'}（页面 {inst.page}）", action=text)
+        return changed, block, "已点击"
+
+    def _wait_for(self, inst, texts, timeout=5.0, step=0.7):
+        """等画面出现这些文字之一（好友农场/任务面板加载要一两秒）。"""
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if any(any(t in str(b["text"]) for b in inst.ocr_blocks) for t in texts):
+                return True
+            time.sleep(step)
+            if not self.grab(inst):
+                return False
+        return any(any(t in str(b["text"]) for b in inst.ocr_blocks) for t in texts)
+
+    def _open_friend_list(self, inst):
+        """回主页 → 点底部「好友」→ 等好友列表。"""
+        if inst.page != "main":
+            self._tap_text(inst, LABEL_HOME, wait=1.8)
+        for attempt in range(3):
+            if any(LABEL_VISIT in str(b["text"]) for b in inst.ocr_blocks):
+                return True
+            self._tap_text(inst, NAV_FRIEND[0], wait=0.5)
+            if self._wait_for(inst, [LABEL_VISIT], timeout=3.0, step=0.35):
+                return True
+        return False
+
+    def visit_friends(self, inst, max_friends=12):
+        """好友（脚本盲点版）：只在开跑和收尾各看一次屏，中间全程固定坐标点击。
+
+        为什么快：抓一帧（截图+sips+hash+OCR）约 1.5s，原来每一步都抓一帧；
+        现在一轮里只做 2 次识别（好友列表图标 + 收尾复检），其余全是
+        「等 1.2s → 点固定坐标」，单个好友 ~2.7s。
+        """
+        t_start = time.time()
+        okp, why = self._ensure_main(inst)
+        if not okp:
+            self.push_log(inst, f"好友任务：{why}", level="warn")
+            return False, f"不在农场主页（{why}）"
+        W, H = inst.img_size if inst.img_size else (824, 1542)
+        sx = lambda fx: int(fx * W)           # 固定坐标按分辨率比例给
+        sy = lambda fy: int(fy * H)
+        POS_FARM = (sx(0.44), sy(0.764))      # 「一键务农」按钮（好友农场底部中间）
+        POS_HOME = (sx(0.867), sy(0.772))     # 「回家」
+        POS_FRIEND_NAV = (sx(0.856), sy(0.938))   # 底部导航「好友」
+        strip_xs = [sx(0.18), sx(0.365), sx(0.55), sx(0.73), sx(0.90)]
+        strip_y = sy(0.905)                   # 好友农场底部头像条
+
+        if not self.grab(inst):
+            return False, "抓帧失败"
+        if not self._open_friend_list(inst):
+            self.fail(inst, "E_PAGE_UNKNOWN", "打不开好友列表（没出现「拜访」）")
+            return False, "打不开好友列表"
+        icons = self._icon_matches(inst, ICON_HELP)
+        rows = self._friend_rows(inst)
+        targets = []
+        for (name, b) in rows:
+            cy = b["y"] + b["h"] / 2
+            if any(abs(y - cy) < 55 and 330 < x < 470 for (x, y, _) in icons):
+                targets.append((name, b))
+        if not targets:
+            self.push_log(inst, f"好友列表：没有带铲土图标的好友（图标命中 {len(icons)} 个）")
+            hit = self.mac.find_icon(str(inst.tmp_png), str(ICON_CLOSE), threshold=0.80)
+            if hit:
+                self._click_xy(inst, hit["cx"], hit["cy"], wait=0.8)
+            return True, "没有需要帮忙的好友（已退出列表）"
+
+        self.push_log(inst, f"好友：{len(targets)} 位带铲土图标 → " +
+                            "、".join(n for n, _ in targets[:8]))
+        helped, stole = 0, 0
+        self.mac.activate(inst.pid)          # 只激活一次，后面盲点不再重复激活
+        # 从列表进第一个
+        n0, b0 = targets[0]
+        self._click_xy(inst, b0["x"] + b0["w"] / 2, b0["y"] + b0["h"] / 2,
+                       wait=1.2, verify=False, activate=False)
+        for k in range(min(max_friends, 12)):
+            if inst.stop_flag.is_set() or self.user_busy_reason(inst):
+                break
+            # 盲点「一键务农」（好友农场里它就是帮忙，给经验）
+            self._click_xy(inst, POS_FARM[0], POS_FARM[1], wait=1.35, verify=False, activate=False)
+            helped += 1
+            # 底部头像条：只点「带小铲土图标」的头像（图标在头像右上角，中心≈图标x-40）
+            if k == 0:
+                icons = self._icon_matches(inst, ICON_HELP, threshold=0.68)
+                strip_av = []
+                for (ix, iy, sc) in icons:
+                    if 1300 < iy < 1430 and 120 < ix < 810:
+                        strip_av.append((int(ix - 40), int(0.905 * H)))
+                strip_av.sort()
+                self.push_log(inst, f"头像条上带图标：{len(strip_av)} 个")
+            if k >= len(strip_av):
+                break
+            self._click_xy(inst, strip_av[k][0], strip_av[k][1], wait=1.2, verify=False, activate=False)
+        # 收尾：回家
+        self._click_xy(inst, POS_HOME[0], POS_HOME[1], wait=0.8, verify=False, activate=False)
+        self.grab(inst)
+        if not any(k == "仓库" for b in inst.ocr_blocks for k in [str(b["text"]).strip()]):
+            self._click_xy(inst, POS_HOME[0], POS_HOME[1], wait=0.8)
+            self.grab(inst)
+        inst.stats["steal"] = inst.stats.get("steal", 0) + stole
+        inst.stats["help"] = inst.stats.get("help", 0) + helped
+        inst.stats["totalActions"] += 1
+        self.push_state(inst)
+        return True, f"帮忙 {helped} 次 / {len(targets)} 位标记（耗时 {time.time() - t_start:.0f}s）"
+
+    def help_friends(self, inst, max_friends=3):
+        """帮好友铲地/帮忙：只点 OCR 里出现的「除草/帮忙/浇水」。"""
+        if not self.grab(inst):
+            return False, "抓帧失败"
+        if not self._open_friend_list(inst):
+            return False, "打不开好友列表"
+        visits = sorted([b for b in inst.ocr_blocks if str(b["text"]).strip() == LABEL_VISIT],
+                        key=lambda b: b["y"])
+        helped = 0
+        for idx in range(min(max_friends, len(visits))):
+            if self.user_busy_reason(inst):
+                break
+            visits = sorted([b for b in inst.ocr_blocks if str(b["text"]).strip() == LABEL_VISIT],
+                            key=lambda b: b["y"])
+            if idx >= len(visits):
+                break
+            b = visits[idx]
+            ok, why = self._click_xy(inst, b["x"] + b["w"] / 2, b["y"] + b["h"] / 2, wait=1.4)
+            if not ok:
+                continue
+            self._wait_for(inst, [LABEL_HOME], timeout=6.0)
+            hit = None
+            for lab in [LABEL_HELP] + HELP_LABELS:
+                if self.find_block(inst, lab, min_conf=0.45):
+                    hit = lab
+                    break
+            if hit:
+                ok, _, _ = self._tap_text(inst, hit, wait=2.0)
+                helped += 1 if ok else 0
+                self.push_log(inst, f"帮好友「{hit}」：{'成功' if ok else '无效'}")
+            else:
+                self.push_log(inst, "这家没有「除草/帮忙/浇水」可点", level="debug")
+            self._tap_text(inst, LABEL_HOME, wait=1.4)
+            self._wait_for(inst, ["仓库", "商店"], timeout=4.0)
+            self._tap_text(inst, NAV_FRIEND[0], wait=1.8)
+            self._wait_for(inst, [LABEL_VISIT], timeout=4.0)
+        inst.stats["help"] = inst.stats.get("help", 0) + helped
+        return True, f"帮忙 {helped} 次"
+
+    # ── 只收不种（timed_harvest）──────────────────────────────────────
+    def harvest_only(self, inst):
+        """只点「一键收获」，不碰「一键务农」，不补种。"""
+        okp, why = self._ensure_main(inst)
+        if not okp:
+            return False, f"不在农场主页（{why}）"
+        if inst.page != "main":
+            self._tap_text(inst, LABEL_HOME, wait=0.8, verify=False)
+            self._wait_for(inst, ["仓库", "商店"], timeout=3.0, step=0.3)
+        block = self.find_block(inst, HARVEST_LABELS[0], min_conf=0.40)
+        if block is None:
+            return True, "没有可收的作物（页面上无「一键收获」）"
+        ok, _, why = self._tap_text(inst, HARVEST_LABELS[0], wait=1.8)
+        if ok:
+            inst.stats["harvest"] = inst.stats.get("harvest", 0) + 1
+            inst.stats["totalActions"] += 1
+            self.push_state(inst)
+            return True, "已一键收获"
+        return False, why
+
+    # ── 左下角任务面板：领取奖励 ───────────────────────────────────────
+    def claim_tasks(self, inst):
+        """点左下角任务卡 → 把「领取」全点掉 → 关面板。"""
+        self._ensure_main(inst)
+        if not self.grab(inst):
+            return False, "抓帧失败"
+        def _opened():
+            return any(k in str(b["text"]) for b in inst.ocr_blocks for k in ("成长任务", "每日任务"))
+
+        if not _opened():
+            w, h = inst.img_size
+            spots = [(int(w * 0.146), int(h * 0.85))]      # 左下角任务卡（实测 120,1310）
+            card = self.find_block(inst, "完成", min_conf=0.4)
+            if card is not None:
+                spots.append((int(card["x"] + card["w"] / 2), int(card["y"] + card["h"] / 2)))
+            for (ix, iy) in spots:
+                self.mac.activate(inst.pid)
+                time.sleep(0.35)
+                self.refresh_windows()
+                sx, sy = self.to_screen(inst, ix, iy)
+                if not self._in_window(inst, sx, sy):
+                    continue
+                self.mac.click(inst.pid, sx, sy, mode=self.click_mode, wid=inst.wid, repeat=1)
+                time.sleep(1.9)
+                self.grab(inst)
+                if _opened():
+                    break
+            if not _opened():
+                self.fail(inst, "E_PAGE_UNKNOWN", "打不开任务面板")
+                return False, "打不开任务面板"
+        claimed = 0
+        for _ in range(8):
+            if self.user_busy_reason(inst):
+                break
+            # 先关掉「恭喜获得」这类弹窗（点空白处）
+            if any("恭喜获得" in str(b["text"]) for b in inst.ocr_blocks):
+                self._close_popup(inst)
+                self.grab(inst)
+                continue
+            btns = [b for b in inst.ocr_blocks if str(b["text"]).strip() == LABEL_CLAIM]
+            if not btns:
+                break
+            btns.sort(key=lambda b: b["y"])
+            ok, _, why = self._tap_text(inst, LABEL_CLAIM, wait=1.9)
+            if ok:
+                claimed += 1
+            else:
+                break
+        # 关面板
+        if any(k in str(b["text"]) for b in inst.ocr_blocks for k in ("成长任务", "每日任务")):
+            self._tap_text(inst, "关闭" if self.find_block(inst, "关闭", 0.4) else "任务", wait=1.2)
+            hit = self.mac.find_icon(str(inst.tmp_png), str(ICON_CLOSE), threshold=0.80)
+            if hit:
+                sx, sy = self.to_screen(inst, hit["cx"], hit["cy"])
+                self.mac.activate(inst.pid)
+                self.mac.click(inst.pid, sx, sy, mode=self.click_mode, wid=inst.wid)
+                time.sleep(1.4)
+                self.grab(inst)
+        self.push_log(inst, f"任务面板：领取 {claimed} 个奖励")
+        return True, f"领取 {claimed} 个任务奖励"
 
     def harvest_plot(self, inst, row, col, max_rounds=6):
         """逐轮收获一块地（点作物唤出「手」→ 点手收一轮 → 复查「可摘」）。
@@ -1011,7 +1528,7 @@ class Agent:
             csx = x0 + target["cx"] * w / pw
             csy = y0 + target["cy"] * h / ph
             self.mac.activate(inst.pid)
-            self.mac.click(inst.pid, csx, csy, mode="ghost", wid=inst.wid, repeat=1)
+            self.mac.click(inst.pid, csx, csy, mode=self.click_mode, wid=inst.wid, repeat=1)
             time.sleep(0.9)
             if not self.grab(inst):
                 break
@@ -1028,7 +1545,7 @@ class Agent:
             hsx = x0 + m["cx"] * w / pw
             hsy = y0 + m["cy"] * h / ph
             # 3) 点手收一轮
-            self.mac.click(inst.pid, hsx, hsy, mode="ghost", wid=inst.wid, repeat=1)
+            self.mac.click(inst.pid, hsx, hsy, mode=self.click_mode, wid=inst.wid, repeat=1)
             rounds += 1
             time.sleep(1.5)
             if not self.grab(inst):
@@ -1068,13 +1585,19 @@ class Agent:
         if not data.get("ok") or not data.get("cells"):
             self.push_log(inst, f"cvhelper 无结果: {str(data)[:120]}", level="warn")
             return None
-        self.push_log(inst, f"cvhelper 定位到 {len(data['cells'])} 格（特征点 {data.get('points')}）")
+        fit = data.get("fit") or {}
+        self.push_log(inst, "cvhelper 定位到 %d 格（%s x0=%s y0=%s score=%s hits=%s 特征点 %s）" % (
+            len(data["cells"]), fit.get("method"), fit.get("x0"), fit.get("y0"),
+            fit.get("score"), fit.get("hits"), data.get("points")))
         out = []
         for c in data["cells"]:
             rgb = c["rgb"]
+            # 优先用 cvhelper 的三态判定（它同时看结构/绿度，土地升级换土色也不失效）；
+            # 老字段缺失时退回纯 RGB 判定
+            kind = c.get("kind") if c.get("kind") in ("crop", "empty", "bigcrop", "grass") else _cell_kind(rgb)
             out.append({"row": c["row"], "col": c["col"],
                         "cx": c.get("cx"), "cy": c.get("cy"),
-                        "rgb": rgb, "kind": _cell_kind(rgb),
+                        "rgb": rgb, "kind": kind,
                         "bigCrop": False, "group": c.get("group"),
                         "covered": c.get("covered", False)})
         inst.plots_updated_at = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -1122,9 +1645,7 @@ class Agent:
         joined = " ".join(texts)
         for page, keys in PAGE_SIGNATURES:
             hits = sum(1 for k in keys if k in joined)
-            if page == "main" and hits >= 1:
-                return page
-            if hits >= 2:
+            if hits >= PAGE_MIN_HITS.get(page, 2):
                 return page
         return "unknown"
 
@@ -1163,9 +1684,30 @@ class Agent:
             inst.idle_rounds = getattr(inst, "idle_rounds", 0) + 1
             return False, f"暂缓（{busy}）"
         # 已知页面白名单之外一律不动作
-        if page not in ("main", "popup_notice", "popup_generic", "warehouse", "shop", "friend", "unknown"):
+        if page not in ("main", "popup_notice", "popup_generic", "warehouse", "shop",
+                        "friend", "friend_farm", "task_panel", "unknown"):
             self.fail(inst, "E_PAGE_UNKNOWN", f"页面「{page}」不在白名单，停手")
             return False, "页面不在白名单"
+
+        # ⓪ 进错页先自己退回来（SVIP/活动/仓库这类误入页面）
+        if page not in ("main", "popup_notice", "popup_generic", "task_panel", "friend", "friend_farm"):
+            okm, whym = self._ensure_main(inst)
+            if okm:
+                page = inst.page
+            else:
+                self.push_log(inst, f"页面纠偏失败（{page} → {inst.page}）", level="warn")
+                return False, whym
+
+        # ⓪ 专项任务：各自有自己的流程，先于通用页面逻辑
+        if page not in ("popup_notice", "popup_generic"):
+            if task_name == "friend":
+                return self.visit_friends(inst)
+            if task_name == "grass":
+                return self.help_friends(inst)
+            if task_name == "reward":
+                return self.claim_tasks(inst)
+            if task_name == "timed_harvest":
+                return self.harvest_only(inst)
 
         # ① 弹窗优先：按弹窗字典走（优先点「直接领取/确定」这类安全按钮，其次点空白）
         if page in ("popup_notice", "popup_generic"):
@@ -1196,7 +1738,7 @@ class Agent:
                     self.refresh_windows()
                     sx, sy = self.to_screen(inst, hit["cx"], hit["cy"])
                     for _ in range(2):
-                        self.mac.click(inst.pid, sx, sy, mode="ghost", wid=inst.wid, repeat=1)
+                        self.mac.click(inst.pid, sx, sy, mode=self.click_mode, wid=inst.wid, repeat=1)
                         time.sleep(0.35)
                     self.push_log(inst, f"[{now}] 页面「{page}」→ 模板匹配命中关闭按钮"
                                         f"({hit['cx']},{hit['cy']} score={hit['score']:.2f})，已点击",
@@ -1225,6 +1767,10 @@ class Agent:
                     else:
                         self.push_log(inst, f"[{now}] 有「{PLANT_LABELS[0]}」但未开启播种权限（--allow-plant），跳过")
                         return False, "空闲：有播种入口但未授权"
+            if action is None and inst.settings.get("fertilize"):
+                fert = self.find_block(inst, "一键施肥", min_conf=0.40)
+                if fert is not None:
+                    action, label = fert, "一键施肥"
             if action is None:
                 # 正常状态：农场已收完或种子耗尽，属"无事可做"，不是错误
                 inst.idle_rounds = getattr(inst, "idle_rounds", 0) + 1
@@ -1236,6 +1782,10 @@ class Agent:
             return self._click_block(inst, action, label, now)
 
         # ③ 其他页面：本后端尚未实现，报错但不乱点
+        if page == "unknown":
+            # 切页动画/加载中会短暂认不出来：不算故障，下一轮再看
+            self.push_log(inst, "页面未识别（可能在加载），本轮跳过", level="debug")
+            return False, "页面未识别"
         self.fail(inst, "E_PAGE_UNKNOWN", f"当前页面「{page}」不在支持范围（不会乱点）")
         return False, f"页面不支持：{page}"
 
@@ -1259,7 +1809,7 @@ class Agent:
         sx, sy = self.to_screen(inst, *target)
         if not self._in_window(inst, sx, sy):
             return False, "空白点越界"
-        self.mac.click(inst.pid, sx, sy, mode="ghost", wid=inst.wid)
+        self.mac.click(inst.pid, sx, sy, mode=self.click_mode, wid=inst.wid)
         time.sleep(1.2)
         ok = self.grab(inst)
         new_page = self.classify(inst) if ok else "unknown"
@@ -1282,7 +1832,7 @@ class Agent:
             self.fail(inst, "E_BAD_REQUEST", f"点击点越界 ({sx:.0f},{sy:.0f})")
             return False, "点击点越界"
         before = self.signature(inst)
-        self.mac.click(inst.pid, sx, sy, mode="ghost", wid=inst.wid)
+        self.mac.click(inst.pid, sx, sy, mode=self.click_mode, wid=inst.wid)
         self.push_log(inst, f"[{now}] 点击「{label}」({sx:.0f},{sy:.0f}) conf={block['conf']:.2f}",
                       action=label, conf=round(block["conf"], 2))
         time.sleep(1.6)
@@ -1366,7 +1916,11 @@ class Agent:
             cfg = inst.tasks[name]
             cfg["lastRun"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started))
             cfg["lastResult"] = why
-            cfg["nextRun"] = time.time() + max(5, int(cfg["intervalSec"]))
+            if str(why).startswith("暂缓"):
+                # 被「用户在用电脑」挡住时别等一整个周期，30 秒后重试（用户一走开就补上）
+                cfg["nextRun"] = time.time() + 30
+            else:
+                cfg["nextRun"] = time.time() + max(5, int(cfg["intervalSec"]))
             inst.next_run = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(cfg["nextRun"]))
             save_task_state(inst.id, inst.tasks)
             self.push_log(inst, f"[{time.strftime('%H:%M:%S')}] 任务 {name}：{why}",
@@ -1379,10 +1933,12 @@ class Agent:
                 cfg["nextRun"] = None
                 break
 
-        if once and inst.state == "running":
-            inst.state = "idle"
-            inst.rev += 1
+        # 一次性任务（面板「立即执行」/HTTP /task）**不改调度状态**。
+        # 之前这里把 running 改成 idle，等于把正在跑的调度器悄悄停掉：
+        # 面板显示「空闲」、下次时间停在过去、看起来"再也不执行了"。
+        if once:
             inst.current_task = None
+            inst.rev += 1
             self.push_state(inst)
 
 
@@ -1615,7 +2171,7 @@ class Handler(BaseHTTPRequestHandler):
             if not (x0 <= sx <= x0 + w and y0 <= sy <= y0 + h):
                 return self._json(400, {"ok": False, "error": {"code": "E_BAD_COORD", "message": "坐标不在游戏窗口内"}})
             AGENT.mac.activate(inst.pid)
-            AGENT.mac.click(inst.pid, sx, sy, mode="ghost", wid=inst.wid, repeat=1)
+            AGENT.mac.click(inst.pid, sx, sy, mode=AGENT.click_mode, wid=inst.wid, repeat=2, gap=0.12)
             AGENT.push_log(inst, f"点击 图像({ix:.0f},{iy:.0f}) → 屏幕({sx:.0f},{sy:.0f})")
             return self._json(200, {"ok": True, "screen": [round(sx, 1), round(sy, 1)]})
 
@@ -1641,7 +2197,7 @@ class Handler(BaseHTTPRequestHandler):
             x0, y0, w, h = inst.window_rect
             sx, sy = x0 + target["cx"] * w / pw, y0 + target["cy"] * h / ph
             AGENT.mac.activate(inst.pid)
-            AGENT.mac.click(inst.pid, sx, sy, mode="ghost", wid=inst.wid, repeat=1)
+            AGENT.mac.click(inst.pid, sx, sy, mode=AGENT.click_mode, wid=inst.wid, repeat=2, gap=0.12)
             AGENT.push_log(inst, f"点击地块 ({row},{col}) → 屏幕({sx:.0f},{sy:.0f})")
             return self._json(200, {"ok": True, "screen": [round(sx, 1), round(sy, 1)]})
 
@@ -1687,6 +2243,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(400, {"ok": False, "error": {"code": "E_BAD_REQUEST", "message": "guardIdle 非法"}})
             if "changeGate" in body:
                 inst.settings["changeGate"] = bool(body["changeGate"])
+            if "clickMode" in body and body["clickMode"] in ("warp", "ghost"):
+                AGENT.click_mode = body["clickMode"]
+            if "fertilize" in body:
+                inst.settings["fertilize"] = bool(body["fertilize"])
             if "buyPolicy" in body:
                 policy = str(body["buyPolicy"])
                 if policy not in ("auto", "owned", "never"):
