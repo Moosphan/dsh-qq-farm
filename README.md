@@ -25,39 +25,39 @@
 
 ```mermaid
 flowchart LR
-    subgraph L1["① 决策层 · DSH 智能体"]
+    subgraph L1["① 决策层 · DSH Agent"]
         direction TB
-        A1["看 farm_look"]
-        A2["判 模型识别"]
-        A3["做 click_plot"]
-        A4["验 再 look"]
+        A1["感知 Perception<br/>farm_look"]
+        A2["推理 Reasoning<br/>多模态识别"]
+        A3["执行 Action<br/>click_plot"]
+        A4["验证 Verification<br/>画面回读"]
         A1 --> A2 --> A3 --> A4
     end
 
-    subgraph L2["② 能力层 · 插件"]
+    subgraph L2["② 能力层 · 插件运行时"]
         direction TB
-        B1["工具 tools.js"]
-        B2["路由 routes.js"]
-        B3["协议 agent-client"]
-        B4["技能 qq-farm"]
-        B5["面板 client.js"]
+        B1["工具注册表<br/>Tool Registry"]
+        B2["路由与鉴权<br/>Route & Auth"]
+        B3["协议客户端<br/>Protocol Client"]
+        B4["技能提供者<br/>Skill Provider"]
+        B5["表现层插槽<br/>Panel Slot"]
         B1 --> B2 --> B3
-        B4 -. 注入作业手册 .-> B1
-        B5 -. 状态镜像 .-> B3
+        B4 -. 上下文注入 .-> B1
+        B5 -. 状态同步 .-> B3
     end
 
     subgraph L3["③ 执行层 · 平台后端"]
         direction TB
-        C1["macagent.py"]
-        C2["macd"]
-        C3["cvhelper"]
+        C1["应用服务<br/>macagent.py"]
+        C2["系统原语<br/>macd"]
+        C3["几何拟合<br/>cvhelper.py"]
         C1 --> C2
         C3 -. 坐标换算 .-> C1
     end
 
     subgraph L4["④ 目标层"]
         direction TB
-        D1["QQ 小程序 · QQ经典农场"]
+        D1["目标应用<br/>QQ 小程序"]
     end
 
     L1 ==> L2 ==> L3 ==> L4
@@ -224,6 +224,25 @@ dsh-qq-farm/
 ├── samples/                  # 参考截图
 └── README.md
 ```
+
+---
+
+## 免责声明
+
+本项目仅供**个人学习与技术研究**使用，不构成对任何产品的官方支持。
+
+- **非官方**：本项目与腾讯公司、QQ、微信及《QQ经典农场》的开发/运营方**无任何关联**，
+  未获其授权、认可或背书。相关名称与商标归各自权利人所有。
+- **合规责任**：使用者应自行确认其行为符合游戏的用户协议与当地法律法规。
+  任何因使用本项目导致的**账号封禁、数据丢失、虚拟财产损失或服务中断**，由使用者自行承担。
+- **无担保**：本软件按「现状」提供，不附带任何明示或暗示的担保，
+  包括但不限于适销性、特定用途适用性与非侵权担保。
+- **非商业用途**：本项目不用于绕过付费、不提供代练/代充等商业服务，
+  亦不鼓励任何破坏游戏公平性的行为。
+- **外部依赖**：插件通过系统级输入模拟操作本机应用，可能受系统版本、
+  权限策略与目标应用更新的影响而失效，作者不承诺持续可用性。
+
+如在您所在地区此类自动化行为不被允许，请勿使用本项目。
 
 ---
 
