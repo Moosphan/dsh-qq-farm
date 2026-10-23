@@ -42,6 +42,25 @@ def soil_mask(bgr):
     return m
 
 
+def field_bbox(bgr):
+    """田地包围盒：米色边框 + 深棕土。比单块连通域稳得多。"""
+    H, W = bgr.shape[:2]
+    b, g, r = bgr[:, :, 0].astype(int), bgr[:, :, 1].astype(int), bgr[:, :, 2].astype(int)
+    # 只用土壤色：边框色会把建筑地基带进来，导致包围盒偏右、晶格整体偏移
+    m = (soil_mask(bgr)).astype(np.uint8)
+    m[: int(H * 0.45), :] = 0
+    m[int(H * 0.78):, :] = 0
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8), iterations=2)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(m, 8)
+    if n <= 1:
+        return None
+    big = max(range(1, n), key=lambda i: stats[i][4])
+    x, y, w, h, area = stats[big]
+    if area < 20000:
+        return None
+    return (x, y, x + w, y + h)
+
+
 def find_plot_centers(bgr):
     H, W = bgr.shape[:2]
     sc = max(0.25, min(3.0, W / 824.0))          # 相对基准 824x1542 的缩放
@@ -88,7 +107,8 @@ def fit_lattice(pts):
 def cell_features(bgr, cx, cy, half=None):
     H, W = bgr.shape[:2]
     if half is None:
-        half = max(8, int(26 * max(0.25, min(3.0, W / 824.0))))
+        # 只看格心：菱形中心一定是纯地面材质，避开格间边框与阴影
+        half = max(5, int(12 * max(0.25, min(3.0, W / 824.0))))
     x0, x1 = max(0, cx - half), min(W, cx + half)
     y0, y1 = max(0, cy - int(half * 0.6)), min(H, cy + int(half * 0.6))
     patch = bgr[y0:y1, x0:x1].reshape(-1, 3).astype(int)
@@ -144,13 +164,28 @@ def main():
     H, W = bgr.shape[:2]
     pts = find_plot_centers(bgr)
     lat = fit_lattice(pts)
-    if not pts or lat is None:
-        print(json.dumps({"ok": False, "error": "找不到地块", "points": len(pts)}))
+    if lat is None:
+        # 没有特征点（例如整片空地）→ 用实测几何的默认基向量
+        sc = max(0.25, min(3.0, W / 824.0))
+        lat = (np.array([56.0, 28.0]) * sc, np.array([-56.0, 28.0]) * sc)
+    box = field_bbox(bgr)
+    if box is None and (not pts or lat is None):
+        print(json.dumps({"ok": False, "error": "找不到田地", "points": len(pts)}))
         return 2
     u, v = lat
     step = 62.6 * max(0.25, min(3.0, W / 824.0))
     u = u / np.linalg.norm(u) * step
     v = v / np.linalg.norm(v) * step
+    # 用「田地平行四边形」锚定原点，而不是用某个随机检出的地块中心：
+    # 地块是菱形，u=(56,28) v=(-56,28)，格心 y = y0 + 28*(i+j)，x = x0 + 56*(i-j)
+    # 因此 y0 = 田地顶边 + 28；x0 = 田地左边 + 56*6 = 左边 + 336
+    box = field_bbox(bgr)
+    if box is not None:
+        fx0, fy0, fx1, fy1 = box
+        half_u = abs(u[1])            # 28 * scale
+        o = np.array([fx0 + 6 * abs(u[0]), fy0 + abs(u[1])], float)
+    else:
+        o = np.array(pts[0], float)
     o = np.array(pts[0], float)
     Minv = np.linalg.inv(np.array([[u[0], v[0]], [u[1], v[1]]]))
     idx = [tuple(np.round(Minv @ (np.array(p) - o)).astype(int)) for p in pts]

@@ -903,6 +903,89 @@ class Agent:
         except (ValueError, AttributeError):
             return None
 
+    def plant(self, inst, seed="auto"):
+        """原子操作：种植。
+
+        流程（已实测的 UI 事实）：
+          1. 找空地（cvhelper 分类为 empty）
+          2. 点空地 → 底部弹出种子栏（每格带数量角标）
+          3. 选一个种子：auto=数量最多（背包主力），event=数量最少（通常是新买的活动种）
+          4. 选中后游戏会自动种满所有空地
+        """
+        if self.user_busy_reason(inst):
+            return False, "用户正在使用电脑，暂缓"
+        if not self.grab(inst):
+            return False, "抓帧失败"
+        cells = self._cv_cells(inst)
+        if not cells:
+            # 全空地画面没有颜色差异，cvhelper 会失效 → 回退上次成功的晶格
+            cells = getattr(inst, "last_cells", None) or []
+            if not cells:
+                return False, "田地识别失败（无历史晶格可供回退），未执行种植"
+            self.push_log(inst, "cvhelper 失效，改用上次识别的晶格坐标", level="warn")
+        empties = [c for c in cells if c.get("kind") == "empty" and c.get("cx")]
+        if not empties:
+            return True, f"识别到 {len(cells)} 格，确实没有空地"
+        pw, ph = inst.img_size
+        x0, y0, w, h = inst.window_rect
+        # 选离田地几何中心最近的空地：避免点到建筑/装饰（会跳到活动页）
+        cx0 = sum(c["cx"] for c in cells) / len(cells)
+        cy0 = sum(c["cy"] for c in cells) / len(cells)
+        target = min(empties, key=lambda c: (c["cx"] - cx0) ** 2 + (c["cy"] - cy0) ** 2)
+        tsx = x0 + target["cx"] * w / pw
+        tsy = y0 + target["cy"] * h / ph
+        self.mac.activate(inst.pid)
+        self.mac.click(inst.pid, tsx, tsy, mode="ghost", wid=inst.wid, repeat=1)
+        time.sleep(1.6)
+        if not self.grab(inst):
+            return False, "抓帧失败"
+        # 种子栏：屏幕下半部的纯数字角标
+        nums = []
+        for b in inst.ocr_blocks:
+            t = str(b.get("text", "")).strip()
+            if t.isdigit() and b["y"] > inst.img_size[1] * 0.62:
+                nums.append((int(t), b))
+        if not nums:
+            # 兜底：尝试开启「一键种植」后再试一次（开关关闭时种子栏不会出现）
+            btn = next((b for b in inst.ocr_blocks if "一键种植" in str(b.get("text", ""))), None)
+            if btn is None:
+                return False, "种子栏没出现，且找不到「一键种植」按钮"
+            bsx = x0 + (btn["x"] + btn["w"] / 2) * w / pw
+            bsy = y0 + (btn["y"] + btn["h"] / 2) * h / ph
+            self.mac.click(inst.pid, bsx, bsy, mode="ghost", wid=inst.wid, repeat=1)
+            time.sleep(1.6)
+            # 确认弹窗：文字读不到（遮罩），点已知的「确认」位置
+            csx = x0 + 573 * w / pw
+            csy = y0 + 880 * h / ph
+            self.mac.click(inst.pid, csx, csy, mode="ghost", wid=inst.wid, repeat=1)
+            time.sleep(1.8)
+            if not self.grab(inst):
+                return False, "开启一键种植后抓帧失败"
+            # 重新点空地
+            self.mac.click(inst.pid, tsx, tsy, mode="ghost", wid=inst.wid, repeat=1)
+            time.sleep(1.8)
+            if not self.grab(inst):
+                return False, "抓帧失败"
+            nums = []
+            for b in inst.ocr_blocks:
+                t = str(b.get("text", "")).strip()
+                if t.isdigit() and b["y"] > inst.img_size[1] * 0.62:
+                    nums.append((int(t), b))
+            if not nums:
+                return False, "已开启一键种植，但种子栏仍未出现"
+        nums.sort(key=lambda x: x[0])
+        if seed == "event":
+            pick = nums[0]          # 数量最少 = 新买的活动种子
+        else:
+            pick = nums[-1]         # 数量最多 = 背包主力种子
+        count, box = pick
+        bsx = x0 + (box["x"] + box["w"] / 2) * w / pw
+        bsy = y0 + (box["y"] + box["h"] / 2) * h / ph
+        self.mac.click(inst.pid, bsx, bsy, mode="ghost", wid=inst.wid, repeat=1)
+        time.sleep(2.5)
+        self.push_log(inst, f"种植：选择种子 x{count}（策略 {seed}），已点选")
+        return True, f"已点选种子 x{count}，等待自动种满"
+
     def harvest_plot(self, inst, row, col, max_rounds=6):
         """逐轮收获一块地（点作物唤出「手」→ 点手收一轮 → 复查「可摘」）。
 
@@ -1491,6 +1574,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200 if started else 409,
                               {"ok": started, "action": "start", "count": 4,
                                "hint": "现在请在游戏里依次点击 4 个角的地块（左上→右上→右下→左下）"})
+
+        m = re.match(r"^/v1/instances/([^/]+)/plant$", p)
+        if m:
+            inst = AGENT.instances.get(m.group(1)) or AGENT.refresh_windows()
+            if inst is None:
+                return self._json(404, {"ok": False, "error": {"code": "E_UNSUPPORTED", "message": "未找到实例"}})
+            ok, why = AGENT.plant(inst, str(body.get("seed", "auto")))
+            return self._json(200 if ok else 409, {"ok": ok, "result": why,
+                                                   "error": None if ok else {"code": "E_PLANT", "message": why}})
 
         m = re.match(r"^/v1/instances/([^/]+)/harvest_plot$", p)
         if m:
