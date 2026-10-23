@@ -15,6 +15,8 @@
 
 import argparse
 import json
+import urllib.parse
+from urllib.parse import urlparse, parse_qs
 import os
 import queue
 import re
@@ -599,7 +601,10 @@ class Instance:
             "settings": getattr(self, "settings", {}),
             "idleRounds": getattr(self, "idle_rounds", 0),
             "stats": self.stats,
-            "statsToday": self.daily.get("today") or {},
+            "statsToday": (self.daily.get("today") or {}) if
+                          (self.daily.get("today") or {}).get("date") == time.strftime("%Y-%m-%d")
+                          else {"date": time.strftime("%Y-%m-%d"), "harvest": 0, "plant": 0,
+                                "steal": 0, "help": 0, "sell": 0, "totalActions": 0},
             "statsHistory": (self.daily.get("history") or [])[-7:],
             "page": self.page,
         }
@@ -1332,7 +1337,13 @@ class Agent:
                 if hit:
                     self._click_xy(inst, hit["cx"], hit["cy"], wait=0.9, verify=False)
                 else:
-                    # ③ 点空白处（弹窗通用关法）
+                    # ③ 固定坐标兜底：好友农场/好友列表的「回家」在右下角（OCR 偶尔认不出）
+                    w, h = inst.img_size or (824, 1542)
+                    self._click_xy(inst, int(w * 0.867), int(h * 0.772), wait=1.0, verify=False)
+                    self.grab(inst)
+                    if inst.page == "main":
+                        continue
+                    # ④ 点空白处（弹窗通用关法）
                     self._close_popup(inst)
             self.grab(inst)
         ok = inst.page == "main"
@@ -1370,8 +1381,7 @@ class Agent:
             if self._tap_text(inst, LABEL_HELP, wait=1.6)[0]:
                 did += 1
                 self.bump_daily(inst, "help")
-        self._tap_text(inst, LABEL_HOME, wait=0.7, verify=False)
-        self._wait_for(inst, ["仓库", "商店"], timeout=3.0, step=0.3)
+        self._ensure_main(inst, tries=2)
         return did, "ok"
 
     # ── 好友：偷菜 / 帮忙 ─────────────────────────────────────────────
@@ -1422,12 +1432,15 @@ class Agent:
     def _open_friend_list(self, inst):
         """回主页 → 点底部「好友」→ 等好友列表。"""
         if inst.page != "main":
-            self._tap_text(inst, LABEL_HOME, wait=1.8)
-        for attempt in range(3):
+            okm, whym = self._ensure_main(inst, tries=3)
+            if not okm:
+                self.push_log(inst, f"回不到主页（{whym}），放弃开好友列表", level="warn")
+                return False
+        for attempt in range(4):
             if any(LABEL_VISIT in str(b["text"]) for b in inst.ocr_blocks):
                 return True
-            self._tap_text(inst, NAV_FRIEND[0], wait=0.5)
-            if self._wait_for(inst, [LABEL_VISIT], timeout=3.0, step=0.35):
+            self._tap_text(inst, NAV_FRIEND[0], wait=0.6)
+            if self._wait_for(inst, [LABEL_VISIT], timeout=3.5, step=0.3):
                 return True
         return False
 
@@ -2108,7 +2121,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
 
     def do_GET(self):  # noqa: N802
-        from urllib.parse import urlparse, parse_qs
+
         u = urlparse(self.path)
         p = u.path
         q = parse_qs(u.query)
