@@ -1565,12 +1565,18 @@ class Handler(BaseHTTPRequestHandler):
                     cfg["intervalSec"] = max(5, int(body["intervalSec"]))
                 except (TypeError, ValueError):
                     return self._json(400, {"ok": False, "error": {"code": "E_BAD_REQUEST", "message": "intervalSec 非法"}})
+            if "mode" in body:
+                mode = str(body["mode"])
+                if mode not in ("notify", "script"):
+                    return self._json(400, {"ok": False, "error": {"code": "E_BAD_REQUEST", "message": "mode 只能是 notify / script"}})
+                cfg["mode"] = mode
             save_task_state(inst.id, inst.tasks)
             inst.rev += 1
             AGENT.push_log(inst, f"任务配置更新：{name} enabled={cfg['enabled']} interval={cfg['intervalSec']}s")
             AGENT.push_state(inst)
             return self._json(200, {"ok": True, "task": name, "config": {
-                "enabled": cfg["enabled"], "intervalSec": cfg["intervalSec"]}})
+                "enabled": cfg["enabled"], "intervalSec": cfg["intervalSec"],
+                "mode": cfg.get("mode", "notify")}})
 
         m = re.match(r"^/v1/instances/([^/]+)/task$", p)
         if m:
