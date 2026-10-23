@@ -1253,7 +1253,11 @@ class Agent:
             started = time.time()
             try:
                 if name == "land_scan":
-                    did, why = self.scan_land(inst)
+                    if inst.frame_hash and inst.frame_changed is False:
+                        self.push_log(inst, "巡查跳过：画面与上次一致（变化检测）", level="debug")
+                        did, why = False, "画面无变化，跳过"
+                    else:
+                        did, why = self.scan_land(inst)
                 elif name in IMPLEMENTED_TASKS:
                     did, why = self.step(inst, name)
                 else:
