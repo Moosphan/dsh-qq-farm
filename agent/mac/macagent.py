@@ -251,6 +251,38 @@ def load_task_state(instance_id):
     return state
 
 
+def _daily_path(platform):
+    return STATE_DIR / ("stats-%s.json" % platform)
+
+
+def load_daily_stats(platform):
+    """读按天统计；文件坏了或没文件就开一个今天的空记录（面板才不会显示「今日（—）」）。"""
+    today = time.strftime("%Y-%m-%d")
+    empty = {"date": today, "harvest": 0, "plant": 0, "steal": 0, "help": 0,
+             "sell": 0, "totalActions": 0}
+    try:
+        data = json.loads(_daily_path(platform).read_text("utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"today": empty, "history": []}
+    if not isinstance(data, dict):
+        return {"today": empty, "history": []}
+    if (data.get("today") or {}).get("date") != today:
+        if data.get("today"):
+            data.setdefault("history", []).append(data["today"])
+        data["today"] = empty
+    data.setdefault("history", [])
+    return data
+
+
+def save_daily_stats(platform, data):
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _daily_path(platform).write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                                         encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _task_last_path():
     return STATE_DIR / "tasks-last.json"
 
@@ -482,6 +514,8 @@ class Instance:
                        "bigCrop": False, "cropColor": None}
                       for r in range(6) for c in range(4)]
         self.stats = {"harvest": 0, "plant": 0, "steal": 0, "help": 0, "sell": 0, "totalActions": 0}
+        # 按天统计（持久化到 ~/.dsh-farm/stats-<platform>.json，重启/换窗口不丢）
+        self.daily = load_daily_stats(win["platform"])
         self.last_frame = None          # 缩略图字节（JPEG/PNG）
         self.frame_mime = "image/jpeg"  # 实际编码
         self.last_frame_at = 0.0
@@ -535,6 +569,8 @@ class Instance:
             "settings": getattr(self, "settings", {}),
             "idleRounds": getattr(self, "idle_rounds", 0),
             "stats": self.stats,
+            "statsToday": self.daily.get("today") or {},
+            "statsHistory": (self.daily.get("history") or [])[-7:],
             "page": self.page,
         }
 
@@ -583,6 +619,25 @@ class Agent:
         if len(self.log_ring) > 5000:
             self.log_ring = self.log_ring[-4000:]
         self.broadcast({"t": "log", "instance": inst.id if inst else None, "entries": [entry]})
+
+    def bump_daily(self, inst, key, n=1):
+        """按天累计动作数（harvest/plant/steal/help/sell）。"""
+        try:
+            today = time.strftime("%Y-%m-%d")
+            d = inst.daily
+            if d.get("today", {}).get("date") != today:
+                # 换天：把昨天推进 history 再重开
+                if d.get("today"):
+                    d.setdefault("history", []).append(d["today"])
+                    d["history"] = d["history"][-30:]
+                d["today"] = {"date": today, "harvest": 0, "plant": 0, "steal": 0,
+                              "help": 0, "sell": 0, "totalActions": 0}
+            if key in d["today"]:
+                d["today"][key] = int(d["today"][key]) + int(n)
+            d["today"]["totalActions"] = int(d["today"].get("totalActions", 0)) + int(n)
+            save_daily_stats(inst.platform, d)
+        except (KeyError, TypeError, ValueError):
+            pass
 
     def push_state(self, inst):
         self.broadcast({"t": "state", "instance": inst.id, "rev": inst.rev, "sync": inst.full_state()})
@@ -1379,6 +1434,10 @@ class Agent:
             self.grab(inst)
         inst.stats["steal"] = inst.stats.get("steal", 0) + stole
         inst.stats["help"] = inst.stats.get("help", 0) + helped
+        if stole:
+            self.bump_daily(inst, "steal", stole)
+        if helped:
+            self.bump_daily(inst, "help", helped)
         inst.stats["totalActions"] += 1
         self.push_state(inst)
         return True, f"帮忙 {helped} 次 / {len(targets)} 位标记（耗时 {time.time() - t_start:.0f}s）"
@@ -1437,6 +1496,7 @@ class Agent:
         ok, _, why = self._tap_text(inst, HARVEST_LABELS[0], wait=1.8)
         if ok:
             inst.stats["harvest"] = inst.stats.get("harvest", 0) + 1
+            self.bump_daily(inst, "harvest")
             inst.stats["totalActions"] += 1
             self.push_state(inst)
             return True, "已一键收获"
@@ -1842,6 +1902,7 @@ class Agent:
         if after != before:
             key = "harvest" if label in HARVEST_LABELS else "plant"
             inst.stats[key] = inst.stats.get(key, 0) + 1
+            self.bump_daily(inst, key)
             inst.stats["totalActions"] += 1
             self.push_state(inst)
             return True, f"「{label}」已执行（画面变化，页面 → {inst.page}）"
