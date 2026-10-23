@@ -23,26 +23,49 @@
 
 ## 架构
 
+```mermaid
+flowchart TB
+    subgraph Agent["DSH 智能体 · 视觉 + 推理"]
+        direction LR
+        A1["① 看<br/>farm_look → read_image"]
+        A2["② 判<br/>模型识别地块 / 成熟 / 弹窗"]
+        A3["③ 做<br/>farm_click_plot / farm_harvest_plot"]
+        A4["④ 验<br/>再次 farm_look 确认"]
+        A1 --> A2 --> A3 --> A4 -.-> A1
+    end
+
+    subgraph Plugin["dsh-qq-farm 插件 · 宿主半"]
+        P1["工具层<br/>lib/tools.js"]
+        P2["路由层<br/>lib/routes.js · 鉴权 / SSE"]
+        P3["协议客户端<br/>lib/agent-client.js"]
+        P4["进程监督<br/>lib/supervisor.js"]
+        P5["技能 Provider<br/>skills/qq-farm"]
+        P6["面板 Slot<br/>lib/client.js"]
+    end
+
+    subgraph Backend["平台后端 · FAP v1"]
+        B1["macagent.py<br/>HTTP + SSE 服务"]
+        B2["macd<br/>Swift 原语"]
+    end
+
+    subgraph Game["游戏"]
+        G1["QQ 小程序 · QQ经典农场"]
+    end
+
+    A3 -->|工具调用| P1
+    A1 -->|工具调用| P1
+    P1 --> P3
+    P3 <-->|HTTP / SSE| B1
+    B1 --> B2
+    B2 -->|CGWindow / CGEvent| G1
+    B1 -.->|帧流| P3
+    P3 -.->|帧| P6
+    P5 -.->|作业手册| Agent
+    P4 -.->|拉起 / 守护| B1
+    P3 --> P2
 ```
-        ┌──────────────────────────────────────────┐
-        │  DSH 智能体（视觉 + 推理 + 记忆）          │
-        │  看 → 判断 → 动手 → 验证                  │
-        └───────────────┬──────────────────────────┘
-                        │ 工具调用（结构化、可审计）
-        ┌───────────────▼──────────────────────────┐
-        │  dsh-qq-farm 插件                         │
-        │  · 感官：farm_look / OCR                  │
-        │  · 手脚：farm_click / farm_click_plot     │
-        │  · 收获：farm_harvest_plot（多轮循环）     │
-        │  · 约束：页面白名单、红线、坐标校验        │
-        │  · 技能：qq-farm（作业手册，按需加载）     │
-        └───────────────┬──────────────────────────┘
-                        │ FAP 协议（本地 HTTP + SSE）
-        ┌───────────────▼──────────────────────────┐
-        │  平台后端（mac / mock）                    │
-        │  只做机械动作：capture / click / ocr      │
-        └──────────────────────────────────────────┘
-```
+
+### 职责边界
 
 | 层 | 负责 | 不负责 |
 |---|---|---|
@@ -170,6 +193,39 @@ POST /v1/instances/:id/harvest_plot
 - [技术方案 v2（智能体协同）](docs/技术方案-v2-智能体协同.md)
 - [功能清单与优先级](docs/功能清单与优先级.md)
 - [桌面版接入与排障](docs/桌面版接入与排障.md)
+
+---
+
+## 仓库结构
+
+```
+dsh-qq-farm/
+├── package.json              # 插件清单（dsh.bundle / dsh.client）
+├── cordis.patch.yml          # DSH 配置补丁（插入插件与默认配置）
+├── lib/                      # 宿主半（Node，ESM）
+│   ├── index.js              # cordis 入口：装配 + 技能 provider
+│   ├── routes.js             # /plugins/dsh-qq-farm/* 代理与鉴权
+│   ├── agent-client.js       # FAP v1 客户端（HTTP + SSE 重连）
+│   ├── supervisor.js         # Agent 进程托管（退避重启）
+│   ├── tools.js              # 8 个 LLM 工具
+│   └── client.js             # 浏览器半（预构建 bundle，React 组件）
+├── shared/
+│   └── fap.cjs               # FAP v1 协议单一事实源
+├── agent/
+│   ├── mac/                  # macOS 后端
+│   │   ├── macagent.py       # FAP 服务（stdlib-only）
+│   │   ├── cvhelper.py       # 田地晶格拟合（OpenCV，可选）
+│   │   ├── bin/macd.swift    # 系统原语（截图 / 点击 / OCR / 模板匹配）
+│   │   └── templates/        # 手 / 关闭按钮等模板
+│   └── mock/                 # 无依赖 Mock（无 macd 时自动启用）
+├── skills/
+│   └── qq-farm/SKILL.md      # 作业手册（按需加载，不占常驻上下文）
+├── docs/                     # 技术方案 / 功能清单 / 排障
+├── scripts/                  # 结构与冒烟检查
+├── poc/                      # 早期可行性验证稿
+├── samples/                  # 参考截图
+└── README.md
+```
 
 ---
 
