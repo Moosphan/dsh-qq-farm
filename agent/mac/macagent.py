@@ -1304,6 +1304,40 @@ class Agent:
             self.push_log(inst, f"页面纠偏失败：当前仍是「{inst.page}」", level="warn")
         return ok, ("已在主页" if ok else f"仍是 {inst.page}")
 
+    def _handle_help_card(self, inst):
+        """主页右下角「好友求助」卡片（小果 好友求助 🤚）：点进去偷/帮忙，再回家。
+
+        卡片会自动消失，所以每次巡检都看一眼；点卡片本体（文字左侧），避开右上角的 ×。
+        """
+        block = self.find_block(inst, "好友求助", min_conf=0.40)
+        if block is None:
+            return 0, "no-card"
+        name = ""
+        for b in inst.ocr_blocks:
+            t = str(b["text"]).strip()
+            if b["y"] < block["y"] - 20 and b["x"] < block["x"] and t and not t.isdigit():
+                name = t
+        # 点卡片头像区（文字左侧 ~45px）；卡片右上角有 ×（约 +190,-35），绝不能点那
+        ix, iy = block["x"] - 45, block["y"] + 4
+        self.push_log(inst, f"好友求助卡片：{name or '?'} → 点进去处理 ({ix},{iy})")
+        self._click_xy(inst, ix, iy, wait=1.2, verify=False)
+        if not self._wait_for(inst, [LABEL_HOME, LABEL_STEAL], timeout=5.0, step=0.3):
+            self.push_log(inst, "好友求助卡片：没进到好友农场，跳过", level="warn")
+            return 0, "no-page"
+        did = 0
+        if self.find_block(inst, LABEL_STEAL):
+            if self._tap_text(inst, LABEL_STEAL, wait=1.6)[0]:
+                did += 1
+                self.bump_daily(inst, "steal")
+                self.push_log(inst, f"好友求助「{name or '?'}」：偷菜成功")
+        if self.find_block(inst, LABEL_HELP):
+            if self._tap_text(inst, LABEL_HELP, wait=1.6)[0]:
+                did += 1
+                self.bump_daily(inst, "help")
+        self._tap_text(inst, LABEL_HOME, wait=0.7, verify=False)
+        self._wait_for(inst, ["仓库", "商店"], timeout=3.0, step=0.3)
+        return did, "ok"
+
     # ── 好友：偷菜 / 帮忙 ─────────────────────────────────────────────
     def _tap_text(self, inst, text, wait=1.6, min_conf=0.45, exact=True, verify=True):
         """点一个 OCR 文本块，返回 (ok, block, why)。
@@ -1383,6 +1417,9 @@ class Agent:
 
         if not self.grab(inst):
             return False, "抓帧失败"
+        card_bonus = 0
+        if inst.page == "main":
+            card_bonus, _ = self._handle_help_card(inst)
         if not self._open_friend_list(inst):
             self.fail(inst, "E_PAGE_UNKNOWN", "打不开好友列表（没出现「拜访」）")
             return False, "打不开好友列表"
@@ -1402,7 +1439,7 @@ class Agent:
 
         self.push_log(inst, f"好友：{len(targets)} 位带铲土图标 → " +
                             "、".join(n for n, _ in targets[:8]))
-        helped, stole = 0, 0
+        helped, stole = card_bonus, 0
         self.mac.activate(inst.pid)          # 只激活一次，后面盲点不再重复激活
         # 从列表进第一个
         n0, b0 = targets[0]
