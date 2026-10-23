@@ -24,49 +24,43 @@
 ## 架构
 
 ```mermaid
-flowchart TB
-    subgraph L1["① 决策层 · DSH 智能体（视觉 + 推理）"]
-        direction LR
-        A1["看<br/>farm_look"]:::act
-        A2["判<br/>模型识别"]:::think
-        A3["做<br/>click_plot"]:::act
-        A4["验<br/>再 look"]:::act
+flowchart LR
+    subgraph L1["① 决策层 · DSH 智能体"]
+        direction TB
+        A1["看 farm_look"]
+        A2["判 模型识别"]
+        A3["做 click_plot"]
+        A4["验 再 look"]
         A1 --> A2 --> A3 --> A4
-        A4 -. 失败重试 .-> A1
     end
 
-    subgraph L2["② 能力层 · dsh-qq-farm 插件"]
-        direction LR
-        B1["工具<br/>tools.js"]
-        B2["路由<br/>routes.js"]
-        B3["协议<br/>agent-client"]
-        B4["技能<br/>qq-farm"]
-        B5["面板<br/>client.js"]
+    subgraph L2["② 能力层 · 插件"]
+        direction TB
+        B1["工具 tools.js"]
+        B2["路由 routes.js"]
+        B3["协议 agent-client"]
+        B4["技能 qq-farm"]
+        B5["面板 client.js"]
+        B1 --> B2 --> B3
+        B4 -. 注入作业手册 .-> B1
+        B5 -. 状态镜像 .-> B3
     end
 
-    subgraph L3["③ 执行层 · 平台后端（FAP v1）"]
-        direction LR
-        C1["macagent.py<br/>HTTP + SSE"]
-        C2["macd<br/>截图 / 点击 / OCR"]
-        C3["cvhelper<br/>晶格拟合"]
+    subgraph L3["③ 执行层 · 平台后端"]
+        direction TB
+        C1["macagent.py"]
+        C2["macd"]
+        C3["cvhelper"]
+        C1 --> C2
+        C3 -. 坐标换算 .-> C1
     end
 
     subgraph L4["④ 目标层"]
-        direction LR
+        direction TB
         D1["QQ 小程序 · QQ经典农场"]
     end
 
-    A3 ==> B1
-    B1 --> B3
-    B3 <==> C1
-    C1 --> C2 --> D1
-    C3 -.-> C1
-    B4 -. 按需注入作业手册 .-> A2
-    B5 -. 状态镜像 / 帧流 .-> B3
-    C1 -. 帧流 .-> B5
-
-    classDef think fill:#e8f0ff,stroke:#4a7bd0,color:#1a3a6b
-    classDef act fill:#e9f7e0,stroke:#5fae3a,color:#27521a
+    L1 ==> L2 ==> L3 ==> L4
 ```
 
 ### 职责边界
