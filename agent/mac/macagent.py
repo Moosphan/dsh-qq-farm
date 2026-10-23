@@ -448,6 +448,8 @@ class Instance:
         self.img_size = (0, 0)
         self.frame_hash = None
         self.frame_changed = False
+        # v2：调度器只"标记待判断"，不自动点击；由模型看图后决定动作
+        self.pending_wake = None
         self.window_rect = (win["x"], win["y"], win["w"], win["h"])
         self.tmp_png = HERE / f".cache-{self.wid}.png"
         self.tmp_jpg = HERE / f".cache-{self.wid}.jpg"
@@ -479,6 +481,7 @@ class Instance:
             "plotsUpdatedAt": getattr(self, "plots_updated_at", None),
             "frameHash": getattr(self, "frame_hash", None),
             "frameChanged": getattr(self, "frame_changed", False),
+            "pendingWake": getattr(self, "pending_wake", None),
             "idleRounds": getattr(self, "idle_rounds", 0),
             "stats": self.stats,
             "page": self.page,
@@ -1253,11 +1256,18 @@ class Agent:
             started = time.time()
             try:
                 if name == "land_scan":
+                    mode = str(inst.tasks.get("land_scan", {}).get("mode", "notify"))
                     if inst.frame_hash and inst.frame_changed is False:
                         self.push_log(inst, "巡查跳过：画面与上次一致（变化检测）", level="debug")
                         did, why = False, "画面无变化，跳过"
+                    elif mode == "script":
+                        did, why = self.scan_land(inst)     # 旧行为：脚本逐格点击
                     else:
-                        did, why = self.scan_land(inst)
+                        # 新行为：只标记"有待判断的变化"，把判断交给模型
+                        inst.pending_wake = {"reason": "land_scan",
+                                             "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+                        self.push_log(inst, "巡查：画面有变化 → 已标记待模型判断（不自动点击）")
+                        did, why = True, "已标记待判断"
                 elif name in IMPLEMENTED_TASKS:
                     did, why = self.step(inst, name)
                 else:
