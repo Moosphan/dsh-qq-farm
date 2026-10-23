@@ -25,44 +25,48 @@
 
 ```mermaid
 flowchart TB
-    subgraph Agent["DSH 智能体 · 视觉 + 推理"]
+    subgraph L1["① 决策层 · DSH 智能体（视觉 + 推理）"]
         direction LR
-        A1["① 看<br/>farm_look → read_image"]
-        A2["② 判<br/>模型识别地块 / 成熟 / 弹窗"]
-        A3["③ 做<br/>farm_click_plot / farm_harvest_plot"]
-        A4["④ 验<br/>再次 farm_look 确认"]
-        A1 --> A2 --> A3 --> A4 -.-> A1
+        A1["看<br/>farm_look"]:::act
+        A2["判<br/>模型识别"]:::think
+        A3["做<br/>click_plot"]:::act
+        A4["验<br/>再 look"]:::act
+        A1 --> A2 --> A3 --> A4
+        A4 -. 失败重试 .-> A1
     end
 
-    subgraph Plugin["dsh-qq-farm 插件 · 宿主半"]
-        P1["工具层<br/>lib/tools.js"]
-        P2["路由层<br/>lib/routes.js · 鉴权 / SSE"]
-        P3["协议客户端<br/>lib/agent-client.js"]
-        P4["进程监督<br/>lib/supervisor.js"]
-        P5["技能 Provider<br/>skills/qq-farm"]
-        P6["面板 Slot<br/>lib/client.js"]
+    subgraph L2["② 能力层 · dsh-qq-farm 插件"]
+        direction LR
+        B1["工具<br/>tools.js"]
+        B2["路由<br/>routes.js"]
+        B3["协议<br/>agent-client"]
+        B4["技能<br/>qq-farm"]
+        B5["面板<br/>client.js"]
     end
 
-    subgraph Backend["平台后端 · FAP v1"]
-        B1["macagent.py<br/>HTTP + SSE 服务"]
-        B2["macd<br/>Swift 原语"]
+    subgraph L3["③ 执行层 · 平台后端（FAP v1）"]
+        direction LR
+        C1["macagent.py<br/>HTTP + SSE"]
+        C2["macd<br/>截图 / 点击 / OCR"]
+        C3["cvhelper<br/>晶格拟合"]
     end
 
-    subgraph Game["游戏"]
-        G1["QQ 小程序 · QQ经典农场"]
+    subgraph L4["④ 目标层"]
+        direction LR
+        D1["QQ 小程序 · QQ经典农场"]
     end
 
-    A3 -->|工具调用| P1
-    A1 -->|工具调用| P1
-    P1 --> P3
-    P3 <-->|HTTP / SSE| B1
-    B1 --> B2
-    B2 -->|CGWindow / CGEvent| G1
-    B1 -.->|帧流| P3
-    P3 -.->|帧| P6
-    P5 -.->|作业手册| Agent
-    P4 -.->|拉起 / 守护| B1
-    P3 --> P2
+    A3 ==> B1
+    B1 --> B3
+    B3 <==> C1
+    C1 --> C2 --> D1
+    C3 -.-> C1
+    B4 -. 按需注入作业手册 .-> A2
+    B5 -. 状态镜像 / 帧流 .-> B3
+    C1 -. 帧流 .-> B5
+
+    classDef think fill:#e8f0ff,stroke:#4a7bd0,color:#1a3a6b
+    classDef act fill:#e9f7e0,stroke:#5fae3a,color:#27521a
 ```
 
 ### 职责边界
