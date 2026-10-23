@@ -655,6 +655,20 @@ class Agent:
             self.log_ring = self.log_ring[-4000:]
         self.broadcast({"t": "log", "instance": inst.id if inst else None, "entries": [entry]})
 
+    def bump_daily_amount(self, inst, key, amount):
+        """按天累计金额（income/expGain），不计入 totalActions。"""
+        try:
+            today = time.strftime("%Y-%m-%d")
+            d = inst.daily
+            if d.get("today", {}).get("date") != today:
+                self.bump_daily(inst, "totalActions", 0)
+                d = inst.daily
+            cur = d.setdefault("today", {})
+            cur[key] = int(cur.get(key, 0)) + int(amount)
+            save_daily_stats(inst.platform, d)
+        except (KeyError, TypeError, ValueError):
+            pass
+
     def bump_daily(self, inst, key, n=1):
         """按天累计动作数（harvest/plant/steal/help/sell）。"""
         try:
@@ -962,6 +976,9 @@ class Agent:
     _RE_NAME_CD = re.compile(r"([^\s:：]{1,8})\s*[：:]\s*(\d{1,2}:\d{2}:\d{2})")
     _RE_CD = re.compile(r"(\d{1,2}:\d{2}:\d{2})\s*后成熟")
     _RE_CD_ONLY = re.compile(r"(\d{1,2}:\d{2}:\d{2})")
+    # 收获结算：「总价值 1万」「经验值 +6781」
+    _RE_TOTAL = re.compile(r"总价值\s*([0-9]+(?:\.[0-9]+)?)\s*(万)?")
+    _RE_EXP = re.compile(r"经验(?:值)?\s*\+?\s*([0-9]+(?:\.[0-9]+)?)\s*(万)?")
 
     def _parse_plot_popup(self, blocks):
         """从地块弹窗文本里解析：作物名 / 成熟倒计时 / 是否空地。"""
@@ -1351,6 +1368,24 @@ class Agent:
             self.push_log(inst, f"页面纠偏失败：当前仍是「{inst.page}」", level="warn")
         return ok, ("已在主页" if ok else f"仍是 {inst.page}")
 
+    def _read_settlement(self, inst):
+        """读刚弹出的收获结算（总价值/经验值），并记进当天统计。返回 (价值, 经验) 或 None。"""
+        joined = " ".join(str(b["text"]) for b in inst.ocr_blocks)
+        mt = self._RE_TOTAL.search(joined)
+        me = self._RE_EXP.search(joined)
+        if not mt and not me:
+            return None
+        total = 0.0
+        if mt:
+            total = float(mt.group(1)) * (10000 if mt.group(2) else 1)
+        exp = 0.0
+        if me:
+            exp = float(me.group(1)) * (10000 if me.group(2) else 1)
+        self.bump_daily_amount(inst, "income", int(total))
+        self.bump_daily_amount(inst, "expGain", int(exp))
+        self.push_log(inst, f"收获结算：总价值 {int(total)}、经验 +{int(exp)}")
+        return int(total), int(exp)
+
     def _handle_help_card(self, inst):
         """主页右下角「好友求助」卡片（小果 好友求助 🤚）：点进去偷/帮忙，再回家。
 
@@ -1587,7 +1622,10 @@ class Agent:
             inst.stats["harvest"] = inst.stats.get("harvest", 0) + 1
             self.bump_daily(inst, "harvest")
             inst.stats["totalActions"] += 1
+            settle = self._read_settlement(inst)
             self.push_state(inst)
+            if settle:
+                return True, f"已一键收获（总价值 {settle[0]}、经验 +{settle[1]}）"
             return True, "已一键收获"
         return False, why
 
@@ -1990,6 +2028,8 @@ class Agent:
         inst.page = self.classify(inst) if ok else inst.page
         if after != before:
             key = "harvest" if label in HARVEST_LABELS else "plant"
+            if key == "harvest":
+                self._read_settlement(inst)
             inst.stats[key] = inst.stats.get(key, 0) + 1
             self.bump_daily(inst, key)
             inst.stats["totalActions"] += 1
