@@ -450,6 +450,8 @@ class Instance:
         self.frame_changed = False
         # v2：调度器只"标记待判断"，不自动点击；由模型看图后决定动作
         self.pending_wake = None
+        # 运行时可变设置（面板可改，无需重启）
+        self.settings = {"guardIdle": 2.0, "changeGate": True}
         self.window_rect = (win["x"], win["y"], win["w"], win["h"])
         self.tmp_png = HERE / f".cache-{self.wid}.png"
         self.tmp_jpg = HERE / f".cache-{self.wid}.jpg"
@@ -482,6 +484,7 @@ class Instance:
             "frameHash": getattr(self, "frame_hash", None),
             "frameChanged": getattr(self, "frame_changed", False),
             "pendingWake": getattr(self, "pending_wake", None),
+            "settings": getattr(self, "settings", {}),
             "idleRounds": getattr(self, "idle_rounds", 0),
             "stats": self.stats,
             "page": self.page,
@@ -547,9 +550,10 @@ class Agent:
         """
         if self.allow_focus_steal:
             return None
+        guard = float(inst.settings.get("guardIdle", self.guard_idle))
         idle = self.mac.idle_seconds()
-        if idle < self.guard_idle:
-            return f"用户正在使用电脑（空闲 {idle:.1f}s < {self.guard_idle:.0f}s）"
+        if idle < guard:
+            return f"用户正在使用电脑（空闲 {idle:.1f}s < {guard:.0f}s）"
         return None
 
     # -- 地块标定 --
@@ -1257,7 +1261,8 @@ class Agent:
             try:
                 if name == "land_scan":
                     mode = str(inst.tasks.get("land_scan", {}).get("mode", "notify"))
-                    if inst.frame_hash and inst.frame_changed is False:
+                    gate_on = bool(inst.settings.get("changeGate", True))
+                    if gate_on and inst.frame_hash and inst.frame_changed is False:
                         self.push_log(inst, "巡查跳过：画面与上次一致（变化检测）", level="debug")
                         did, why = False, "画面无变化，跳过"
                     elif mode == "script":
@@ -1577,6 +1582,23 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "task": name, "config": {
                 "enabled": cfg["enabled"], "intervalSec": cfg["intervalSec"],
                 "mode": cfg.get("mode", "notify")}})
+
+        m = re.match(r"^/v1/instances/([^/]+)/settings$", p)
+        if m:
+            inst = AGENT.instances.get(m.group(1)) or AGENT.refresh_windows()
+            if inst is None:
+                return self._json(404, {"ok": False, "error": {"code": "E_UNSUPPORTED", "message": "未找到实例"}})
+            if "guardIdle" in body:
+                try:
+                    inst.settings["guardIdle"] = max(0.0, min(600.0, float(body["guardIdle"])))
+                except (TypeError, ValueError):
+                    return self._json(400, {"ok": False, "error": {"code": "E_BAD_REQUEST", "message": "guardIdle 非法"}})
+            if "changeGate" in body:
+                inst.settings["changeGate"] = bool(body["changeGate"])
+            AGENT.push_log(inst, f"设置更新：guardIdle={inst.settings['guardIdle']}s "
+                                 f"changeGate={inst.settings['changeGate']}")
+            AGENT.push_state(inst)
+            return self._json(200, {"ok": True, "settings": inst.settings})
 
         m = re.match(r"^/v1/instances/([^/]+)/task$", p)
         if m:
