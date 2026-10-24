@@ -1365,6 +1365,10 @@ class Agent:
             page = inst.page
             if page == "main":
                 return True, "已在主页"
+            # ⓪ 活动页（左上角返回箭头）
+            if page in ("event_shop", "svip"):
+                if self._leave_event(inst) or (page == "svip" and False):
+                    continue
             # ① 文字按钮
             for label in ("关闭", "返回", "回家", "我知道了", "取消"):
                 if self.find_block(inst, label, min_conf=0.4):
@@ -1550,11 +1554,13 @@ class Agent:
             if not self.grab(inst):
                 return 0, "抓帧失败"
             after = self._popup_cd_seconds(inst)
-            if (before is not None and after is not None and after < before) or \
-                    self.find_block(inst, "一键施肥", min_conf=0.40) is None:
-                self.push_log(inst, f"施肥：倒计时 {before}→{after} 秒")
+            gain = (before - after) if (before is not None and after is not None) else 0
+            gone = self.find_block(inst, "一键施肥", min_conf=0.40) is None
+            if gain >= 60 or gone:
+                self.push_log(inst, f"施肥：倒计时 {before}→{after} 秒（缩短 {gain}s，按钮消失={gone}）")
                 return 1, "已施肥"
-            return 0, "施肥点了没变化"
+            self.push_log(inst, f"施肥：点了但倒计时只 -{gain}s 且按钮还在，判为无效", level="warn")
+            return 0, "施肥无效"
         return 0, "没找到「一键施肥」"
 
     def _popup_cd_seconds(self, inst):
@@ -1567,44 +1573,84 @@ class Agent:
         return h * 3600 + mi * 60 + se
 
     # ── 活动页（只读）──────────────────────────────────────────────────
-    _RE_SHOP_LV = re.compile(r"店铺(\d+)级")
-    _RE_TURNOVER = re.compile(r"营业额[^0-9]{0,4}([0-9.]+)\s*(万)?")
-    _RE_EVENT_CD = re.compile(r"(\d+)\s*天\s*(\d+)\s*[时小]|(\d{1,2}:\d{2})")
+    def _leave_event(self, inst):
+        """活动页返回：左上角返回箭头（实测 0.067W, 0.144H）。"""
+        W, H = inst.img_size or (822, 1542)
+        for (fx, fy) in ((0.067, 0.144), (0.05, 0.14)):
+            self._click_xy(inst, int(W * fx), int(H * fy), wait=1.2, verify=False)
+            if self._wait_for(inst, ["仓库", "商店"], timeout=3.0, step=0.3):
+                return True
+        return False
 
     def read_event(self, inst):
-        """读当期活动（只读：店铺等级 / 营业额 / 倒计时），读完退回主页。
+        """读当期活动（只读）：店铺等级 / 营业额 / 倒计时；读完退回主页。
 
-        绝不点「兑换商店」里的购买/兑换按钮 —— 那是花活动货币的不可逆操作。
+        红线：不点「兑换商店」「制作奶茶」「店铺升级」这类会花资源/改变状态的按钮。
         """
         self._ensure_main(inst)
         if not self.grab(inst):
             return False, "抓帧失败"
-        block = (self.find_block(inst, "奶茶热销中", min_conf=0.40)
-                 or self.find_block(inst, "热销中", min_conf=0.40))
+        block = None
+        for txt in ("奶茶热销中", "热销中", "奶茶"):
+            block = self.find_block(inst, txt, min_conf=0.35)
+            if block:
+                break
         if block is None:
             return False, "主页没有活动入口"
-        self._click_xy(inst, block["x"] + block["w"] / 2, block["y"] + block["h"] / 2, wait=2.0)
+        self._click_xy(inst, block["x"] + block["w"] / 2, block["y"] + block["h"] / 2, wait=2.2)
+        self._wait_for(inst, ["店铺等级", "营业额"], timeout=5.0, step=0.4)
         if not self.grab(inst):
             return False, "抓帧失败"
-        joined = " ".join(str(b["text"]) for b in inst.ocr_blocks)
-        lv = self._RE_SHOP_LV.search(joined)
-        turn = self._RE_TURNOVER.search(joined)
-        cd = self._RE_EVENT_CD.search(joined)
+        icons = inst.ocr_blocks
+
+        def digits(t):
+            d = re.sub(r"[^0-9]", "", str(t))
+            return int(d) if d else None
+
+        # 店铺等级：数字在「店铺等级」标签正上方
+        lv = None
+        for b in icons:
+            if "店铺等级" in str(b["text"]):
+                for c in icons:
+                    t = str(c["text"]).strip()
+                    if (t.isdigit() and abs(c["x"] - b["x"]) < 70
+                            and 0 < b["y"] - c["y"] < 70):
+                        lv = int(t)
+                        break
+        # 营业额：「营业额：` + 数字（可能被 OCR 混在一起）
+        turnover = None
+        for b in icons:
+            t = str(b["text"])
+            if "营业额" in t:
+                turnover = digits(t)
+                if turnover is None:
+                    for c in icons:
+                        if abs(c["y"] - b["y"]) < 26 and c["x"] > b["x"]:
+                            v = digits(c["text"])
+                            if v is not None:
+                                turnover = v
+                                break
+                break
+        # 倒计时：21天6时 / 明日04:10
+        cd = None
+        for b in icons:
+            m = re.search(r"\d+\s*天\s*\d+\s*[时小]|\d{1,2}:\d{2}", str(b["text"]))
+            if m:
+                cd = m.group(0).strip()
+                break
         info = {
-            "name": "奶茶热销中" if "奶茶" in joined else "活动",
-            "shopLevel": int(lv.group(1)) if lv else None,
-            "turnover": (float(turn.group(1)) * (10000 if turn.group(2) else 1)) if turn else None,
-            "countdown": cd.group(0).strip() if cd else None,
+            "name": "奶茶热销中" if any("奶茶" in str(b["text"]) for b in icons) else "活动",
+            "shopLevel": lv, "turnover": turnover, "countdown": cd,
             "page": inst.page,
         }
         inst.event = info
-        self.push_log(inst, f"活动页：{info['name']} 店铺{info['shopLevel'] or '?'}级 "
-                            f"营业额{int(info['turnover']) if info['turnover'] else '?'} "
-                            f"倒计时 {info['countdown'] or '?'}")
-        self._ensure_main(inst, tries=3)
-        return True, (f"{info['name']} 店铺 {info['shopLevel'] or '?'} 级，"
-                      f"营业额 {int(info['turnover']) if info['turnover'] else '?'}，"
-                      f"剩余 {info['countdown'] or '?'}")
+        self.push_log(inst, f"活动页：{info['name']} 店铺{lv if lv is not None else '?'}级 "
+                            f"营业额{turnover if turnover is not None else '?'} 倒计时 {cd or '?'}")
+        left = self._leave_event(inst)
+        if not left:
+            self._ensure_main(inst, tries=3)
+        return True, (f"{info['name']} 店铺 {lv if lv is not None else '?'} 级，"
+                      f"营业额 {turnover if turnover is not None else '?'}，剩余 {cd or '?'}")
 
     def _handle_help_card(self, inst):
         """主页右下角「好友求助」卡片（小果 好友求助 🤚）：点进去偷/帮忙，再回家。
@@ -1674,7 +1720,7 @@ class Agent:
         if ok:
             inst.page = self.classify(inst)
         changed = ok and verify and self.signature(inst) != before
-        self.push_log(inst, f"好友流程：点「{text}」({ix:.0f},{iy:.0f})→({sx:.0f},{sy:.0f}) "
+        self.push_log(inst, f"点击「{text}」({ix:.0f},{iy:.0f})→({sx:.0f},{sy:.0f}) "
                             f"{'画面变化' if changed else '无变化'}（页面 {inst.page}）", action=text)
         return changed, block, "已点击"
 
@@ -2125,7 +2171,8 @@ class Agent:
             return False, f"暂缓（{busy}）"
         # 已知页面白名单之外一律不动作
         if page not in ("main", "popup_notice", "popup_generic", "warehouse", "shop",
-                        "friend", "friend_farm", "task_panel", "unknown"):
+                        "friend", "friend_farm", "task_panel", "unknown",
+                        "event_shop", "svip"):
             self.fail(inst, "E_PAGE_UNKNOWN", f"页面「{page}」不在白名单，停手")
             return False, "页面不在白名单"
 
