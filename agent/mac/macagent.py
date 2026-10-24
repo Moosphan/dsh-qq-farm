@@ -34,6 +34,7 @@ MACD = HERE / "bin" / "macd"
 TEMPLATES = HERE / "templates"
 ICON_CLOSE = TEMPLATES / "close_x.png"
 ICON_HELP = TEMPLATES / "help.png"      # 好友列表/头像条上的「小人铲土」= 需要帮忙
+ICON_STEAL = TEMPLATES / "steal.png"    # 好友列表上的「手套+面罩」= 有可偷的作物
 
 # 地块网格在截图中的相对位置（比例，适配窗口缩放）。
 # 4 列 × 6 行纵向排布；bbox 由「格内颜色最一致」自动校准得到（真机 824x1542 截图）：
@@ -1399,6 +1400,27 @@ class Agent:
         self.push_log(inst, f"收获结算：总价值 {int(total)}、经验 +{int(exp)}")
         return int(total), int(exp)
 
+    def _harvest_ripe_by_tap(self, inst):
+        """没有「一键收获」时逐株收：点「可摘」下方的作物本体（点树冠无效）。"""
+        done = 0
+        for _ in range(4):
+            badge = self.find_block(inst, "可摘", min_conf=0.40)
+            if badge is None:
+                break
+            ix = badge["x"] + badge["w"] / 2 + 20
+            iy = badge["y"] + badge["h"] / 2 + 85
+            self._click_xy(inst, ix, iy, wait=1.5)
+            if not self.grab(inst):
+                break
+            if self.find_block(inst, "可摘", min_conf=0.40) is None:
+                done += 1
+                self.bump_daily(inst, "harvest")
+                self._read_settlement(inst)
+                self.push_log(inst, f"逐株收获：第 {done} 株 ✓")
+            else:
+                break
+        return done
+
     def _handle_help_card(self, inst):
         """主页右下角「好友求助」卡片（小果 好友求助 🤚）：点进去偷/帮忙，再回家。
 
@@ -1531,13 +1553,16 @@ class Agent:
         if not self.grab(inst):
             return False, "抓帧失败"
         icons = self._icon_matches(inst, ICON_HELP)
+        thieves = self._icon_matches(inst, ICON_STEAL)
         rows = self._friend_rows(inst)
-        if icons:
-            self.push_log(inst, "图标: " + ", ".join(f"({int(x)},{int(y)})" for (x, y, _) in icons[:8]))
+        if icons or thieves:
+            self.push_log(inst, f"图标：可帮 {len(icons)} 个 / 可偷 {len(thieves)} 个")
         targets = []
         for (name, b) in rows:
             cy = b["y"] + b["h"] / 2
-            if any(abs(y - cy) < 62 and 340 < x < 435 for (x, y, _) in icons):
+            can_help = any(abs(y - cy) < 62 and 340 < x < 435 for (x, y, _) in icons)
+            can_steal = any(abs(y - cy) < 62 and 360 < x < 450 for (x, y, _) in thieves)
+            if can_help or can_steal:
                 targets.append((name, b))
         if not targets:
             self.push_log(inst, f"好友列表：没有带铲土图标的好友（图标命中 {len(icons)} 个）")
@@ -1557,15 +1582,26 @@ class Agent:
         for k in range(min(max_friends, 12)):
             if inst.stop_flag.is_set() or self.user_busy_reason(inst):
                 break
-            # 点「一键务农 / 一键偷取」图标，然后**校验**：出现「经验值」或按钮消失才算成功
-            self._click_xy(inst, POS_FARM[0], POS_FARM[1], wait=0.9, verify=False, activate=False)
+            # 进农场后先看清楚是「一键偷取」还是「一键务农」，点图标中心，再校验
+            self.grab(inst)
+            here = self._farm_header_name(inst) or (targets[k][0] if k < len(targets) else "")
+            has_steal = self.find_block(inst, LABEL_STEAL) is not None
+            has_help = self.find_block(inst, LABEL_HELP) is not None
+            self._click_xy(inst, POS_FARM[0], POS_FARM[1], wait=1.0, verify=False, activate=False)
+            ok = False
             if self.grab(inst):
                 got_exp = any("经验" in str(b["text"]) for b in inst.ocr_blocks)
                 still = self.find_block(inst, LABEL_HELP) or self.find_block(inst, LABEL_STEAL)
-                if got_exp or not still:
+                ok = got_exp or not still
+            if ok:
+                if has_steal:
+                    stole += 1
+                    self.push_log(inst, f"好友「{here}」：偷菜成功")
+                elif has_help:
                     helped += 1
-                else:
-                    self.push_log(inst, "好友农场：点一键务农没反应（按钮还在）", level="debug")
+                    self.push_log(inst, f"好友「{here}」：一键务农（帮忙）✓")
+            elif has_steal or has_help:
+                self.push_log(inst, f"好友「{here}」：点了没反应（偷取={has_steal} 帮忙={has_help}）", level="debug")
             # 底部头像条：只点「带小铲土图标」的头像（图标在头像右上角，中心≈图标x-40）
             if k == 0:
                 icons = self._icon_matches(inst, ICON_HELP, threshold=0.62)
@@ -1990,6 +2026,13 @@ class Agent:
                 fert = self.find_block(inst, "一键施肥", min_conf=0.40)
                 if fert is not None:
                     action, label = fert, "一键施肥"
+            if action is None:
+                # 没有一键按钮，但田里有「可摘」→ 逐株点收
+                ripe = self._harvest_ripe_by_tap(inst)
+                if ripe:
+                    inst.stats["totalActions"] += 1
+                    self.push_state(inst)
+                    return True, f"逐株收获 {ripe} 株"
             if action is None:
                 # 正常状态：农场已收完或种子耗尽，属"无事可做"，不是错误
                 inst.idle_rounds = getattr(inst, "idle_rounds", 0) + 1
