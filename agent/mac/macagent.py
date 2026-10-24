@@ -1421,6 +1421,55 @@ class Agent:
                 break
         return done
 
+    def _replant(self, inst):
+        """收完补种：点空地 → 种子栏 → 翻到活动作物页 → 点种子卡（一键种植开着就一次种满）。
+
+        实测（2026-10-24）：一键种植开启时，点任意种子卡会把**所有空地**一次种满并加经验；
+        草莓（当前活动作物）在种子栏第 2 页第 1 张卡。
+        """
+        W, H = inst.img_size or (822, 1542)
+        seed_page = int(inst.settings.get("seedPage", 2) or 2)
+        # ① 点田地中间的空地唤出种子栏（822×1542 下实测 400,880 落在格心上）
+        self._click_xy(inst, int(W * 0.487), int(H * 0.570), wait=1.5)
+        if not self.grab(inst):
+            return 0, "抓帧失败"
+        if not self.find_block(inst, "一键种植", min_conf=0.4):
+            return 0, "没弹出种子栏"
+        # ② 翻页到目标页（▶ 在种子栏右端）
+        for _ in range(max(0, seed_page - 1)):
+            self._click_xy(inst, int(W * 0.92), int(H * 0.682), wait=0.9, verify=False)
+            self.grab(inst)
+        # ③ 点第一张种子卡 → 一键种满
+        before_exp = self._exp_now(inst)
+        self._click_xy(inst, int(W * 0.16), int(H * 0.672), wait=1.7)
+        if not self.grab(inst):
+            return 0, "抓帧失败"
+        after_exp = self._exp_now(inst)
+        gained = (after_exp - before_exp) if (after_exp is not None and before_exp is not None) else 0
+        bar_closed = self.find_block(inst, "一键种植", min_conf=0.4) is None
+        if bar_closed and gained > 0:
+            self.bump_daily(inst, "plant")
+            self.push_log(inst, f"补种：第 {seed_page} 页种子卡 → 一键种满（经验 +{int(gained)}）")
+            return 1, f"已补种（经验 +{int(gained)}）"
+        if bar_closed:
+            self.push_log(inst, "补种：种子栏关了但没读到经验增长，可能种子不足", level="warn")
+            return 0, "补种未确认"
+        return 0, "种子栏还开着（可能没点中种子卡）"
+
+    def _exp_now(self, inst):
+        """从 HUD 读当前经验（形如 1.1万/4.7万 或 3432/4.7万）→ 数字。"""
+        for b in inst.ocr_blocks:
+            t = str(b["text"])
+            if "/" in t and ("万" in t or t.replace("/", "").isdigit()):
+                cur = t.split("/")[0]
+                try:
+                    if cur.endswith("万"):
+                        return float(cur[:-1]) * 10000
+                    return float(cur)
+                except ValueError:
+                    continue
+        return None
+
     def _handle_help_card(self, inst):
         """主页右下角「好友求助」卡片（小果 好友求助 🤚）：点进去偷/帮忙，再回家。
 
@@ -2033,6 +2082,12 @@ class Agent:
                     inst.stats["totalActions"] += 1
                     self.push_state(inst)
                     return True, f"逐株收获 {ripe} 株"
+            if action is None:
+                planted, why = self._replant(inst)
+                if planted:
+                    inst.stats["totalActions"] += 1
+                    self.push_state(inst)
+                    return True, f"补种完成（{why}）"
             if action is None:
                 # 正常状态：农场已收完或种子耗尽，属"无事可做"，不是错误
                 inst.idle_rounds = getattr(inst, "idle_rounds", 0) + 1
