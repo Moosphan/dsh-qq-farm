@@ -103,7 +103,7 @@ DEFAULT_TASKS = {
     "restart":       {"enabled": False, "intervalSec": 14400, "label": "定时重启窗口"},
 }
 # 已经真正实现的任务（其余会返回 E_UNSUPPORTED）
-IMPLEMENTED_TASKS = {"main", "land_scan", "friend", "reward", "grass", "timed_harvest"}
+IMPLEMENTED_TASKS = {"main", "land_scan", "friend", "reward", "grass", "timed_harvest", "event"}
 
 # 好友/任务面板用到的标签（只有这些会被点，其余一律不点）
 NAV_FRIEND = ["好友"]                    # 底部导航「好友」
@@ -596,6 +596,7 @@ class Instance:
             "settings": getattr(self, "settings", {}),
             "idleRounds": getattr(self, "idle_rounds", 0),
             "stats": self.stats,
+            "event": getattr(self, "event", None),
             "statsToday": (self.daily.get("today") or {}) if
                           (self.daily.get("today") or {}).get("date") == time.strftime("%Y-%m-%d")
                           else {"date": time.strftime("%Y-%m-%d"), "harvest": 0, "plant": 0,
@@ -1525,6 +1526,86 @@ class Agent:
                     continue
         return None
 
+    def _fertilize(self, inst):
+        """施肥：点开一个已种地块 → 弹窗里的「一键施肥」→ 校验倒计时变短/经验增长。
+
+        为什么要点地块：「一键施肥」不是主页常驻按钮，它在**地块弹窗**里
+        （2026-10-23 实测位置 608,1155，但以 OCR 实际位置为准，避免漂移）。
+        """
+        cells = self._cv_cells(inst) or []
+        # 优先挑已经种了的地块（cvhelper 分类 crop），没有就挨个试
+        order = ([c for c in cells if (c.get("kind") or "") == "crop"]
+                 + [c for c in cells if (c.get("kind") or "") != "crop"])[:8]
+        if not order:
+            return 0, "没有可点地块"
+        for c in order:
+            self._click_xy(inst, int(c["cx"]), int(c["cy"]), wait=1.2)
+            if not self.grab(inst):
+                return 0, "抓帧失败"
+            btn = self.find_block(inst, "一键施肥", min_conf=0.40)
+            if btn is None:
+                continue
+            before = self._popup_cd_seconds(inst)
+            self._tap_text(inst, "一键施肥", wait=1.6)
+            if not self.grab(inst):
+                return 0, "抓帧失败"
+            after = self._popup_cd_seconds(inst)
+            if (before is not None and after is not None and after < before) or \
+                    self.find_block(inst, "一键施肥", min_conf=0.40) is None:
+                self.push_log(inst, f"施肥：倒计时 {before}→{after} 秒")
+                return 1, "已施肥"
+            return 0, "施肥点了没变化"
+        return 0, "没找到「一键施肥」"
+
+    def _popup_cd_seconds(self, inst):
+        """读弹窗里的「xx:xx:xx 后成熟」→ 秒（与被用作静态解析的 `_cd_seconds(text)` 区分）。"""
+        joined = " ".join(str(b["text"]) for b in inst.ocr_blocks)
+        m = self._RE_CD.search(joined)
+        if not m:
+            return None
+        h, mi, se = (int(x) for x in m.group(1).split(":"))
+        return h * 3600 + mi * 60 + se
+
+    # ── 活动页（只读）──────────────────────────────────────────────────
+    _RE_SHOP_LV = re.compile(r"店铺(\d+)级")
+    _RE_TURNOVER = re.compile(r"营业额[^0-9]{0,4}([0-9.]+)\s*(万)?")
+    _RE_EVENT_CD = re.compile(r"(\d+)\s*天\s*(\d+)\s*[时小]|(\d{1,2}:\d{2})")
+
+    def read_event(self, inst):
+        """读当期活动（只读：店铺等级 / 营业额 / 倒计时），读完退回主页。
+
+        绝不点「兑换商店」里的购买/兑换按钮 —— 那是花活动货币的不可逆操作。
+        """
+        self._ensure_main(inst)
+        if not self.grab(inst):
+            return False, "抓帧失败"
+        block = (self.find_block(inst, "奶茶热销中", min_conf=0.40)
+                 or self.find_block(inst, "热销中", min_conf=0.40))
+        if block is None:
+            return False, "主页没有活动入口"
+        self._click_xy(inst, block["x"] + block["w"] / 2, block["y"] + block["h"] / 2, wait=2.0)
+        if not self.grab(inst):
+            return False, "抓帧失败"
+        joined = " ".join(str(b["text"]) for b in inst.ocr_blocks)
+        lv = self._RE_SHOP_LV.search(joined)
+        turn = self._RE_TURNOVER.search(joined)
+        cd = self._RE_EVENT_CD.search(joined)
+        info = {
+            "name": "奶茶热销中" if "奶茶" in joined else "活动",
+            "shopLevel": int(lv.group(1)) if lv else None,
+            "turnover": (float(turn.group(1)) * (10000 if turn.group(2) else 1)) if turn else None,
+            "countdown": cd.group(0).strip() if cd else None,
+            "page": inst.page,
+        }
+        inst.event = info
+        self.push_log(inst, f"活动页：{info['name']} 店铺{info['shopLevel'] or '?'}级 "
+                            f"营业额{int(info['turnover']) if info['turnover'] else '?'} "
+                            f"倒计时 {info['countdown'] or '?'}")
+        self._ensure_main(inst, tries=3)
+        return True, (f"{info['name']} 店铺 {info['shopLevel'] or '?'} 级，"
+                      f"营业额 {int(info['turnover']) if info['turnover'] else '?'}，"
+                      f"剩余 {info['countdown'] or '?'}")
+
     def _handle_help_card(self, inst):
         """主页右下角「好友求助」卡片（小果 好友求助 🤚）：点进去偷/帮忙，再回家。
 
@@ -2067,6 +2148,8 @@ class Agent:
                 return self.claim_tasks(inst)
             if task_name == "timed_harvest":
                 return self.harvest_only(inst)
+            if task_name == "event":
+                return self.read_event(inst)
 
         # ① 弹窗优先：按弹窗字典走（优先点「直接领取/确定」这类安全按钮，其次点空白）
         if page in ("popup_notice", "popup_generic"):
@@ -2127,9 +2210,12 @@ class Agent:
                         self.push_log(inst, f"[{now}] 有「{PLANT_LABELS[0]}」但未开启播种权限（--allow-plant），跳过")
                         return False, "空闲：有播种入口但未授权"
             if action is None and inst.settings.get("fertilize"):
-                fert = self.find_block(inst, "一键施肥", min_conf=0.40)
-                if fert is not None:
-                    action, label = fert, "一键施肥"
+                # 「一键施肥」在地块弹窗里，主页 OCR 扫不到 → 走点地块的流程
+                fed, why = self._fertilize(inst)
+                if fed:
+                    inst.stats["totalActions"] += 1
+                    self.push_state(inst)
+                    return True, f"施肥完成（{why}）"
             if action is None:
                 # 没有一键按钮，但田里有「可摘」→ 逐株点收
                 ripe = self._harvest_ripe_by_tap(inst)
