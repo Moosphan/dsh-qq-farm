@@ -819,6 +819,19 @@ class Agent:
         else:
             inst.pid = win["pid"]
             inst.window_rect = (win["x"], win["y"], win["w"], win["h"])
+        # 清理已关闭窗口的僵尸实例：否则它的调度线程会一直「抓帧失败」刷屏，
+        # 面板上还会多出一个永远红的实例。
+        try:
+            live = {w.get("wid") for w in self.mac.windows()}
+            for iid, ins in list(self.instances.items()):
+                if ins.wid in live:
+                    continue
+                ins.stop_flag.set()
+                ins.state = "stopped"
+                self.push_log(ins, f"窗口 {ins.wid} 已关闭 → 实例下线")
+                self.instances.pop(iid, None)
+        except (AttributeError, TypeError):
+            pass
         return inst
 
     # -- 抓帧 --
@@ -1407,15 +1420,20 @@ class Agent:
             self.push_log(inst, "好友求助卡片：没进到好友农场，跳过", level="warn")
             return 0, "no-page"
         did = 0
+        w, h = inst.img_size or (822, 1542)
+        fx, fy = int(w * 0.517), int(h * 0.746)     # 图标中心（点文字中心无效）
         if self.find_block(inst, LABEL_STEAL):
-            if self._tap_text(inst, LABEL_STEAL, wait=1.6)[0]:
+            self._click_xy(inst, fx, fy, wait=1.6)
+            if self.grab(inst) and not self.find_block(inst, LABEL_STEAL):
                 did += 1
                 self.bump_daily(inst, "steal")
                 self.push_log(inst, f"好友求助「{name or '?'}」：偷菜成功")
         if self.find_block(inst, LABEL_HELP):
-            if self._tap_text(inst, LABEL_HELP, wait=1.6)[0]:
+            self._click_xy(inst, fx, fy, wait=1.6)
+            if self.grab(inst) and not self.find_block(inst, LABEL_HELP):
                 did += 1
                 self.bump_daily(inst, "help")
+                self.push_log(inst, f"好友求助「{name or '?'}」：一键务农（帮忙）✓")
         self._ensure_main(inst, tries=2)
         return did, "ok"
 
@@ -1494,8 +1512,9 @@ class Agent:
         W, H = inst.img_size if inst.img_size else (824, 1542)
         sx = lambda fx: int(fx * W)           # 固定坐标按分辨率比例给
         sy = lambda fy: int(fy * H)
-        POS_FARM = (sx(0.44), sy(0.764))      # 「一键务农」按钮（好友农场底部中间）
-        POS_HOME = (sx(0.867), sy(0.772))     # 「回家」
+        # 实测：按钮的**图标**在文字右上方约 (+63,-28)；点文字中心游戏不响应
+        POS_FARM = (sx(0.517), sy(0.746))     # 「一键务农/一键偷取」图标中心 (822,1542 → 425,1150)
+        POS_HOME = (sx(0.894), sy(0.770))     # 「回家」图标中心 (735,1187)
         POS_FRIEND_NAV = (sx(0.856), sy(0.938))   # 底部导航「好友」
         strip_xs = [sx(0.18), sx(0.365), sx(0.55), sx(0.73), sx(0.90)]
         strip_y = sy(0.905)                   # 好友农场底部头像条
@@ -1508,12 +1527,17 @@ class Agent:
         if not self._open_friend_list(inst):
             self.fail(inst, "E_PAGE_UNKNOWN", "打不开好友列表（没出现「拜访」）")
             return False, "打不开好友列表"
+        time.sleep(0.6)                 # 列表还在滑入时扫图标会错位
+        if not self.grab(inst):
+            return False, "抓帧失败"
         icons = self._icon_matches(inst, ICON_HELP)
         rows = self._friend_rows(inst)
+        if icons:
+            self.push_log(inst, "图标: " + ", ".join(f"({int(x)},{int(y)})" for (x, y, _) in icons[:8]))
         targets = []
         for (name, b) in rows:
             cy = b["y"] + b["h"] / 2
-            if any(abs(y - cy) < 55 and 330 < x < 470 for (x, y, _) in icons):
+            if any(abs(y - cy) < 62 and 340 < x < 435 for (x, y, _) in icons):
                 targets.append((name, b))
         if not targets:
             self.push_log(inst, f"好友列表：没有带铲土图标的好友（图标命中 {len(icons)} 个）")
@@ -1533,15 +1557,21 @@ class Agent:
         for k in range(min(max_friends, 12)):
             if inst.stop_flag.is_set() or self.user_busy_reason(inst):
                 break
-            # 盲点「一键务农」（好友农场里它就是帮忙，给经验）
-            self._click_xy(inst, POS_FARM[0], POS_FARM[1], wait=1.35, verify=False, activate=False)
-            helped += 1
+            # 点「一键务农 / 一键偷取」图标，然后**校验**：出现「经验值」或按钮消失才算成功
+            self._click_xy(inst, POS_FARM[0], POS_FARM[1], wait=0.9, verify=False, activate=False)
+            if self.grab(inst):
+                got_exp = any("经验" in str(b["text"]) for b in inst.ocr_blocks)
+                still = self.find_block(inst, LABEL_HELP) or self.find_block(inst, LABEL_STEAL)
+                if got_exp or not still:
+                    helped += 1
+                else:
+                    self.push_log(inst, "好友农场：点一键务农没反应（按钮还在）", level="debug")
             # 底部头像条：只点「带小铲土图标」的头像（图标在头像右上角，中心≈图标x-40）
             if k == 0:
-                icons = self._icon_matches(inst, ICON_HELP, threshold=0.68)
+                icons = self._icon_matches(inst, ICON_HELP, threshold=0.62)
                 strip_av = []
                 for (ix, iy, sc) in icons:
-                    if 1300 < iy < 1430 and 120 < ix < 810:
+                    if 1290 < iy < 1440 and 120 < ix < 810:
                         strip_av.append((int(ix - 40), int(0.905 * H)))
                 strip_av.sort()
                 self.push_log(inst, f"头像条上带图标：{len(strip_av)} 个")
@@ -1558,10 +1588,12 @@ class Agent:
         self._ensure_main(inst, tries=3)
         inst.stats["steal"] = inst.stats.get("steal", 0) + stole
         inst.stats["help"] = inst.stats.get("help", 0) + helped
+        self.push_log(inst, f"好友收尾：stole={stole} helped={helped} 即将记账")
         if stole:
             self.bump_daily(inst, "steal", stole)
         if helped:
             self.bump_daily(inst, "help", helped)
+        self.push_log(inst, f"好友收尾：记账后 today.help={(inst.daily.get('today') or {}).get('help')}")
         inst.stats["totalActions"] += 1
         self.push_state(inst)
         return True, f"帮忙 {helped} 次 / {len(targets)} 位标记（耗时 {time.time() - t_start:.0f}s）"
@@ -2194,7 +2226,14 @@ class Handler(BaseHTTPRequestHandler):
             if not inst.ocr_blocks:
                 AGENT.grab(inst)
             AGENT.push_state(inst)
-            return self._json(200, inst.full_state())
+            st = inst.full_state()
+            try:
+                ring = getattr(AGENT, "log_ring", None) or []
+                st["recentLogs"] = [e.get("msg") for e in ring
+                                    if e.get("instance") in (inst.id, None)][-15:]
+            except Exception:
+                st["recentLogs"] = []
+            return self._json(200, st)
 
         m = re.match(r"^/v1/instances/([^/]+)/calibrate$", p)
         if m:
