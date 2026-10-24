@@ -1475,9 +1475,22 @@ class Agent:
                     return True
             return False
 
+        def card_points():
+            """用种子卡上数量角标的 OCR 位置定位卡（固定 x 会点歪）。"""
+            pts = []
+            for b in inst.ocr_blocks:
+                t = str(b["text"]).strip()
+                if t.isdigit() and 930 < b["y"] < 1160 and b["w"] < 90:
+                    pts.append((int(b["x"] + b["w"] / 2), int(b["y"] + b["h"] / 2)))
+            return sorted(pts)
+
         def tap_card(fx):
             before = self._exp_now(inst)
-            self._click_xy(inst, int(W * fx), int(H * 0.672), wait=1.6)
+            pts = card_points()
+            if pts:
+                self._click_xy(inst, pts[0][0], pts[0][1], wait=1.6)
+            else:
+                self._click_xy(inst, int(W * fx), int(H * 0.672), wait=1.6)
             if not self.grab(inst):
                 return -1
             after = self._exp_now(inst)
@@ -2276,6 +2289,19 @@ class Agent:
                     inst.stats["totalActions"] += 1
                     self.push_state(inst)
                     return True, f"补种完成（{why}）"
+            if action is None:
+                # 兜底：OCR 没认出「一键务农/一键收获」，但按钮可能只是没识别到 →
+                # 点固定坐标（图标中心）一次，画面有变化就算成功
+                W, H = inst.img_size or (822, 1542)
+                fx, fy = int(W * 0.517), int(H * 0.746)
+                before_sig = self.signature(inst)
+                self._click_xy(inst, fx, fy, wait=1.6)
+                if self.grab(inst) and self.signature(inst) != before_sig:
+                    inst.stats["totalActions"] += 1
+                    self.bump_daily(inst, "plant")
+                    self.push_state(inst)
+                    self.push_log(inst, "兜底：点固定坐标的一键务农/收获（OCR 没认出按钮）")
+                    return True, "兜底点击底部按钮（画面有变化）"
             if action is None:
                 # 正常状态：农场已收完或种子耗尽，属"无事可做"，不是错误
                 inst.idle_rounds = getattr(inst, "idle_rounds", 0) + 1
