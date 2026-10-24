@@ -1421,40 +1421,88 @@ class Agent:
                 break
         return done
 
-    def _replant(self, inst):
-        """收完补种：点空地 → 种子栏 → 翻到活动作物页 → 点种子卡（一键种植开着就一次种满）。
+    def _count_empty(self, inst):
+        """用 cvhelper 数「空地」格数（含草/未识别都算需要处理）；失败返回 None。"""
+        cells = self._cv_cells(inst)
+        if cells is None:
+            return None
+        return sum(1 for c in cells if (c.get("kind") or "empty") in ("empty", "grass", "unknown", None))
 
-        实测（2026-10-24）：一键种植开启时，点任意种子卡会把**所有空地**一次种满并加经验；
-        草莓（当前活动作物）在种子栏第 2 页第 1 张卡。
+    def _replant(self, inst):
+        """收完补种：点空地 → 种子栏 → 依次试种子卡，直到「点卡没经验增长」为止。
+
+        实测（2026-10-24）：
+          - 一键种植开启时，点任意种子卡会把**所有能种的空地**一次种满并加经验
+          - 草莓（活动作物）在第 2 页第 1 张卡
+          - **种子数量不足时会剩空地**：所以种完要换下一张卡继续，直到点卡不再有经验增长
+            （注意：刚种下的幼苗看起来和空地一样，不能用 cvhelper 的 empty 判定来复查）
         """
         W, H = inst.img_size or (822, 1542)
         seed_page = int(inst.settings.get("seedPage", 2) or 2)
-        # ① 点田地中间的空地唤出种子栏（822×1542 下实测 400,880 落在格心上）
-        self._click_xy(inst, int(W * 0.487), int(H * 0.570), wait=1.5)
-        if not self.grab(inst):
-            return 0, "抓帧失败"
-        if not self.find_block(inst, "一键种植", min_conf=0.4):
+        card_fx = (0.16, 0.32, 0.48, 0.63, 0.79)
+        arrow = (int(W * 0.92), int(H * 0.682))
+
+        # 点空地才会弹种子栏；点已种的格子只弹倒计时。所以用 cvhelper 的格心逐个试，
+        # 先试被分类为 empty 的，再试其它（刚种的幼苗也会被分类成 empty，所以都试）。
+        cells = self._cv_cells(inst) or []
+        order = ([c for c in cells if (c.get("kind") or "") == "empty"]
+                 + [c for c in cells if (c.get("kind") or "") != "empty"])[:12]
+
+        def open_bar():
+            if not order:
+                for (fx, fy) in ((0.487, 0.570), (0.42, 0.605), (0.55, 0.605)):
+                    self._click_xy(inst, int(W * fx), int(H * fy), wait=1.2)
+                    if self.grab(inst) and self.find_block(inst, "一键种植", min_conf=0.4):
+                        return True
+                return False
+            for c in order:
+                self._click_xy(inst, int(c["cx"]), int(c["cy"]), wait=1.2)
+                if not self.grab(inst):
+                    return False
+                if self.find_block(inst, "一键种植", min_conf=0.4):
+                    return True
+            return False
+
+        def tap_card(fx):
+            before = self._exp_now(inst)
+            self._click_xy(inst, int(W * fx), int(H * 0.672), wait=1.6)
+            if not self.grab(inst):
+                return -1
+            after = self._exp_now(inst)
+            if before is None or after is None:
+                return 0
+            return int(after - before)
+
+        if not open_bar():
             return 0, "没弹出种子栏"
-        # ② 翻页到目标页（▶ 在种子栏右端）
         for _ in range(max(0, seed_page - 1)):
-            self._click_xy(inst, int(W * 0.92), int(H * 0.682), wait=0.9, verify=False)
+            self._click_xy(inst, arrow[0], arrow[1], wait=0.8, verify=False)
             self.grab(inst)
-        # ③ 点第一张种子卡 → 一键种满
-        before_exp = self._exp_now(inst)
-        self._click_xy(inst, int(W * 0.16), int(H * 0.672), wait=1.7)
-        if not self.grab(inst):
-            return 0, "抓帧失败"
-        after_exp = self._exp_now(inst)
-        gained = (after_exp - before_exp) if (after_exp is not None and before_exp is not None) else 0
-        bar_closed = self.find_block(inst, "一键种植", min_conf=0.4) is None
-        if bar_closed and gained > 0:
-            self.bump_daily(inst, "plant")
-            self.push_log(inst, f"补种：第 {seed_page} 页种子卡 → 一键种满（经验 +{int(gained)}）")
-            return 1, f"已补种（经验 +{int(gained)}）"
-        if bar_closed:
-            self.push_log(inst, "补种：种子栏关了但没读到经验增长，可能种子不足", level="warn")
-            return 0, "补种未确认"
-        return 0, "种子栏还开着（可能没点中种子卡）"
+
+        planted, misses = 0, 0
+        for attempt in range(12):
+            gained = tap_card(card_fx[attempt % len(card_fx)])
+            if gained > 0:
+                planted += 1
+                misses = 0
+                self.bump_daily(inst, "plant")
+                self.push_log(inst, f"补种：第 {attempt + 1} 张卡 → 经验 +{gained}")
+            else:
+                misses += 1
+                self.push_log(inst, f"补种：第 {attempt + 1} 张卡没反应（剩余空地可能已种满或该种子用完）",
+                              level="debug")
+                if misses >= 2:
+                    break
+            # 种子栏可能已关（种满即关），需要继续就重新打开
+            if self.find_block(inst, "一键种植", min_conf=0.4) is None:
+                if not open_bar():
+                    break
+            if (attempt + 1) % len(card_fx) == 0:
+                self._click_xy(inst, arrow[0], arrow[1], wait=0.8, verify=False)
+                self.grab(inst)
+        if planted:
+            return 1, f"已补种 {planted} 次"
+        return 0, "补种未生效"
 
     def _exp_now(self, inst):
         """从 HUD 读当前经验（形如 1.1万/4.7万 或 3432/4.7万）→ 数字。"""
