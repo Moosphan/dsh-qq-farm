@@ -428,6 +428,8 @@ class Mac:
         if self.dry_run:
             return {"ok": True, "mode": "dry-run", "from": [sx, sy], "to": [sx, sy], "repeat": repeat}
         result = {"ok": False, "error": "未执行"}
+        if mode == "auto":
+            mode = "warp"
         for i in range(max(1, repeat)):
             if mode == "bg" and wid:
                 # SkyLight 真后台（Chromium 系有效；QQ/微信小程序容器实测无效）
@@ -607,8 +609,12 @@ class Instance:
 
 
 class Agent:
-    # 点击模式："warp"=真实光标（可靠，光标会动）；"ghost"=幽灵点击（不挪光标，但实测会失效）
-    click_mode = "warp"
+    # 点击模式：
+    #   "auto"（默认）= 先 ghost（点完把光标还原，尽量不打扰用户），失败才升级到 warp
+    #   "ghost" = 只用幽灵点击；"warp" = 只用真实光标（最可靠但会挪光标）
+    click_mode = "auto"
+    # auto 模式下"当前认定的有效模式"，一旦 warp 生效就记住，避免每次都试探
+    effective_click_mode = "ghost"
 
     def __init__(self, mac, fps=2.0, interval=2.5, allow_plant=True,
                  guard_idle=2.0, allow_focus_steal=False):
@@ -1242,6 +1248,39 @@ class Agent:
         self.push_log(inst, f"种植：选择种子 x{count}（策略 {seed}），已点选")
         return True, f"已点选种子 x{count}，等待自动种满"
 
+    def _click(self, inst, sx, sy, wait=1.2, repeat=1, gap=0.0):
+        """统一点击入口。
+
+        auto 模式：先用 ghost（光标会还原，不打断用户），失败再升级到 warp；
+        一旦 warp 成功就记住，后续直接用，避免每步都试探。
+        """
+        mode = self.click_mode
+        if mode == "auto":
+            mode = self.effective_click_mode
+        self.mac.activate(inst.pid)
+        self.mac.click(inst.pid, sx, sy, mode=mode, wid=inst.wid, repeat=repeat, gap=gap)
+        return mode
+
+    def _click_changed(self, inst, sx, sy, wait=1.2, repeat=1, gap=0.0):
+        """点击并校验画面是否变；auto 模式下失败会用 warp 再点一次。"""
+        before = self.signature(inst)
+        mode = self._click(inst, sx, sy, wait=wait, repeat=repeat, gap=gap)
+        time.sleep(wait)
+        if not self.grab(inst):
+            return False, mode
+        if self.signature(inst) != before:
+            if self.click_mode == "auto" and mode == "ghost":
+                self.effective_click_mode = "ghost"     # ghost 有效，继续用（光标不被打断）
+            return True, mode
+        if self.click_mode == "auto" and mode != "warp":
+            # ghost 没生效 → 升级到 warp，并记住
+            self.effective_click_mode = "warp"
+            self.push_log(inst, "ghost 点击无效 → 升级为 warp（会移动光标）", level="warn")
+            self._click(inst, sx, sy, wait=wait, repeat=repeat, gap=gap)
+            time.sleep(wait)
+            return bool(self.grab(inst)), "warp"
+        return False, mode
+
     def _click_xy(self, inst, ix, iy, wait=2.0, verify=True, activate=True):
         self.last_action_at = time.time()
         """按图像坐标点一下（先换算再激活再单点）。
@@ -1252,8 +1291,7 @@ class Agent:
         if not self._in_window(inst, sx, sy):
             return False, "点击点越界"
         if activate:
-            self.mac.activate(inst.pid)
-        self.mac.click(inst.pid, sx, sy, mode=self.click_mode, wid=inst.wid, repeat=1)
+            self._click(inst, sx, sy, wait=0, repeat=1)
         time.sleep(wait)
         if not verify:
             return True, "已点击(未校验)"
@@ -1726,8 +1764,7 @@ class Agent:
             return False, block, f"「{text}」点击点越界"
         before = self.signature(inst)
         # 与 /click 原语保持一致：activate 后立刻单点（refresh 后再点反而会丢）
-        self.mac.activate(inst.pid)
-        self.mac.click(inst.pid, sx, sy, mode=self.click_mode, wid=inst.wid, repeat=1)
+        self._click(inst, sx, sy, wait=0, repeat=1)
         time.sleep(wait)
         ok = self.grab(inst) if verify else True
         if ok:
@@ -2059,7 +2096,10 @@ class Agent:
 
         这是首选方式：不需要人工标定，也不需要点击地块。
         需要系统里有带 cv2/numpy 的 Python；找不到就返回 None 回退。
+        可通过设置 `useCv=false` 完全关闭（此时靠 OCR + 固定坐标，主流程不受影响）。
         """
+        if not inst.settings.get("useCv", True):
+            return None
         helper = HERE / "cvhelper.py"
         if not helper.exists():
             return None
@@ -2790,6 +2830,8 @@ class Handler(BaseHTTPRequestHandler):
                 inst.settings["changeGate"] = bool(body["changeGate"])
             if "clickMode" in body and body["clickMode"] in ("warp", "ghost"):
                 AGENT.click_mode = body["clickMode"]
+            if "useCv" in body:
+                inst.settings["useCv"] = bool(body["useCv"])
             if "fertilize" in body:
                 inst.settings["fertilize"] = bool(body["fertilize"])
             if "buyPolicy" in body:
