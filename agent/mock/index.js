@@ -23,7 +23,7 @@ function arg(name, fallback) {
 const PORT = Number(arg('port', process.env.QQFARM_AGENT_PORT || 4571))
 const INSTANCE_COUNT = Math.max(1, Number(arg('instances', 2)))
 const TOKEN = arg('token', process.env.QQFARM_AGENT_TOKEN || '')
-const AGENT_VERSION = '0.1.0-mock'
+const AGENT_VERSION = '0.2.0-mock'
 
 // ── 假状态机 ──────────────────────────────────────────────────────────
 /** @type {Map<string, any>} */

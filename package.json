@@ -1,6 +1,6 @@
 {
   "name": "dsh-qq-farm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "QQ 经典农场自动化助手面板 — DeepSeek Harness 插件（面板 + 控制面 + LLM 工具），自动化由独立 Farm Agent 承担",
   "type": "module",
   "main": "lib/index.js",

@@ -76,7 +76,7 @@ def _group_big_crops(cells, cols, rows, color_tol=20):
     for q in marked:
         grid[q]["bigCrop"] = True
     return groups
-AGENT_VERSION = "0.1.0-mac"
+AGENT_VERSION = "0.2.0-mac"
 PROTOCOL = 1
 
 # ── 协议常量（与 shared/fap.cjs 保持一致）────────────────────────────
