@@ -362,13 +362,7 @@ class Mac:
         return rows
 
     def focus_game_app(self):
-        """把 QQ 小程序窗口调到前台（窗口被最小化时 winlist 会看不到）。"""
-        for app in ("QQEXMiniProgram", "WeChat", "微信"):
-            r = subprocess.run(["osascript", "-e",
-                                f'tell application "System Events" to set frontmost of process "{app}" to true'],
-                               capture_output=True, text=True)
-            if r.returncode == 0:
-                return app
+        """已禁用：主动 activate 会抢焦点 / 弹授权 / 卡死。仅保留方法名以免旧调用报错。"""
         return None
 
     def find_game_window(self, title_contains="农场"):
@@ -789,15 +783,28 @@ class Agent:
 
     # -- 窗口发现 --
     def refresh_windows(self):
-        """重新发现窗口；窗口重建后 wid/pid 会变，必须每次核对。"""
+        """重新发现窗口；窗口重建后 wid/pid 会变，必须每次核对。
+
+        注意：这里**绝不**主动 activate 任何 App。之前为了找回被最小化的窗口去
+        osascript 唤起应用，结果会弹系统授权、抢走焦点（还把微信拎到前台），
+        而且 osascript 卡住时会把整个 HTTP 处理线程堵死（面板显示 E_NO_AGENT）。
+        窗口没了就等它回来，由外部（用户）决定是否重开。
+        """
         win = self.mac.find_game_window()
         if win is None:
-            # 窗口被最小化/切到后台时 winlist 会空 → 先把它调到前台再找一次
-            app = self.mac.focus_game_app()
-            if app:
-                time.sleep(0.6)
-                win = self.mac.find_game_window()
-        if win is None:
+            # 窗口不在了：先把僵尸实例清掉（否则面板会一直显示"运行中"，
+            # 而它的调度线程还在对已关闭的窗口瞎点）
+            try:
+                live = {w.get("wid") for w in self.mac.windows()}
+                for iid, ins in list(self.instances.items()):
+                    if ins.wid in live:
+                        continue
+                    ins.stop_flag.set()
+                    ins.state = "stopped"
+                    self.push_log(ins, f"窗口 {ins.wid} 已关闭 → 实例下线（任务已停）")
+                    self.instances.pop(iid, None)
+            except (AttributeError, TypeError):
+                pass
             return None
         iid = f"{win['platform']}-{win['wid']}"
         inst = self.instances.get(iid)
@@ -2461,7 +2468,11 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             inst = AGENT.refresh_windows() or AGENT.instances.get(m.group(1))
             if inst is None:
-                return self._json(404, {"ok": False, "error": {"code": "E_UNSUPPORTED", "message": "未找到游戏窗口"}})
+                AGENT.push_log(None, f"控制：{body.get('action')} 未生效（游戏窗口已关闭，没有可控制的实例）",
+                               level="warn")
+                return self._json(409, {"ok": False, "error": {
+                    "code": "E_NO_INSTANCE",
+                    "message": "游戏窗口已关闭，没有运行中的实例（重新打开小程序后会自动接管）"}})
             action = body.get("action")
             if action not in CONTROL_ACTIONS:
                 return self._json(400, {"ok": False, "error": {"code": "E_UNSUPPORTED", "message": f"未知动作 {action}"}})
