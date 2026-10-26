@@ -2132,7 +2132,11 @@ class Agent:
             ok = False
             if self.grab(inst):
                 got_exp = any("经验" in str(b["text"]) for b in inst.ocr_blocks)
-                still = self.find_block(inst, LABEL_HELP) or self.find_block(inst, LABEL_STEAL)
+                # 只校验**刚点的那一个**按钮是否消失：好友家常常同时有「一键偷取」和「一键务农」，
+                # 偷完只剩务农，用"任一按钮还在"判断会把成功误判成失败（实测踩过）
+                clicked = btn[0] if btn is not None else None
+                still = self.find_block(inst, clicked) if clicked else (
+                    self.find_block(inst, LABEL_HELP) or self.find_block(inst, LABEL_STEAL))
                 ok = got_exp or not still
             if ok:
                 if has_steal:
