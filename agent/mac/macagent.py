@@ -1145,6 +1145,22 @@ class Agent:
                 nums.append((int(t), b))
         return sorted(nums, key=lambda z: z[1]["x"])
 
+    def _bottom_button(self, inst, labels=("一键偷取", "一键务农", "一键收获", "一键施肥")):
+        """按 OCR 找底部大按钮（图标在文字上方），返回 (label, ix, iy) 或 None。
+
+        说明：底部这几个按钮共用同一个位置、图标相似，只能用**文字标签**区分；
+        而且按钮的可点区域在文字**上方**（图标），所以要往上偏一点。
+        """
+        W, H = inst.img_size or (892, 1662)
+        for lab in labels:
+            b = self.find_block(inst, lab, min_conf=0.40)
+            if b is None:
+                continue
+            ix = int(b["x"] + b["w"] / 2)
+            iy = int(b["y"] + b["h"] / 2)
+            return (lab, ix, max(0, iy - int(H * 0.024)))
+        return None
+
     def _open_seed_bar(self, inst, cx, cy):
         """点一格，判断这一格到底是什么状态。
 
@@ -2108,7 +2124,11 @@ class Agent:
             here = self._farm_header_name(inst) or (targets[k][0] if k < len(targets) else "")
             has_steal = self.find_block(inst, LABEL_STEAL) is not None
             has_help = self.find_block(inst, LABEL_HELP) is not None
-            self._click_xy(inst, POS_FARM[0], POS_FARM[1], wait=1.0, verify=False, activate=False)
+            btn = self._bottom_button(inst)
+            if btn is not None:
+                self._click_xy(inst, btn[1], btn[2], wait=1.0, verify=False, activate=False)
+            else:
+                self._click_xy(inst, POS_FARM[0], POS_FARM[1], wait=1.0, verify=False, activate=False)
             ok = False
             if self.grab(inst):
                 got_exp = any("经验" in str(b["text"]) for b in inst.ocr_blocks)
@@ -2229,10 +2249,11 @@ class Agent:
 
         if not _opened():
             w, h = inst.img_size
-            spots = [(int(w * 0.146), int(h * 0.85))]      # 左下角任务卡（实测 120,1310）
+            spots = []
             card = self.find_block(inst, "完成", min_conf=0.4)
             if card is not None:
                 spots.append((int(card["x"] + card["w"] / 2), int(card["y"] + card["h"] / 2)))
+            spots.append((int(w * 0.146), int(h * 0.85)))   # 兜底：左下角任务卡
             for (ix, iy) in spots:
                 self.mac.activate(inst.pid)
                 time.sleep(0.35)
