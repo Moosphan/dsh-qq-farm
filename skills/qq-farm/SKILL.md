@@ -240,3 +240,31 @@ for round in 1..6:
 
 结论：macOS 上能做到的最"不打扰"方案就是 **ghost**（点完光标瞬间还原）；
 真正零打扰只能在协议层或换 Android + `uiautomator`（元素级精确点击）实现。
+
+### 后台点击深挖（2026-10-26，含 cua-driver 源码与官方文档对照）
+参考：cua-driver 的 [macOS 鼠标实现](https://github.com/trycua/cua/blob/f9325c8719d04c0cac1ff82b1e539f893d89110d/libs/cua-driver/rust/crates/platform-macos/src/input/mouse.rs)
+与 [MACOS.md 支持矩阵](https://github.com/trycua/cua/blob/e6dda16ae04cd82da99304ef7628525a5e0f7be2/libs/cua-driver/Skills/cua-driver/MACOS.md)。
+
+他们在 `click_at_xy_chromium` 里是 **belt+suspenders**：`SLEventPostToPid` 与公共
+`CGEventPostToPid` **都发一遍**。我们把公共 API 也补上了（`macd bgclick` 现在两条都走），
+实测对本容器**依旧无效**：
+
+| 试法 | 结果 |
+|---|---|
+| bgclick（SkyLight only） | ❌ |
+| bgclick（SkyLight + 公共 `CGEventPostToPid`） | ❌ |
+| bgclick `--no-primer` / `--count 2` | ❌ |
+| 先 `macd activate` 再 bgclick | ❌ |
+| **ghost 点击同一坐标** | ✅ 生效，且返回 `cursor_restored` |
+
+cua-driver 自己的结论也一致：macOS 上**可信后台指针只对 Google Chrome 验证通过**；
+其它 Chromium 产品/嵌入宿主（QQ小程序属于此类）会返回 `browser_input_trust_unavailable`，
+他们要"全后台"就只能走 **CDP**（`Input.dispatchMouseEvent` / DOM），前提是宿主开放调试端口。
+QQ小程序不开放 → 这条路对我们不可用。
+
+**因此 macOS 上的现实结论**：
+1. 最"不打扰"的可用方案 = **ghost**（点完把光标瞬间还原，用户只看到一闪）
+2. 真正零打扰只能换运行环境：
+   - 把游戏跑在**另一个 macOS 用户会话**（快速用户切换）或 **虚拟机/虚拟显示器** 里驱动
+   - 或换 **Android 模拟器/手机 + adb + uiautomator**（元素级精确点击，完全不碰鼠标）
+   - 或走协议层（封号风险，不建议）

@@ -2,6 +2,15 @@
 
 ## 未发布（2026-10-26）
 
+### 后台点击调研（结论：macOS 上做不到零打扰）
+- 补齐 cua-driver 的 belt+suspenders：`macd bgclick` 同时走 SkyLight `SLEventPostToPid`
+  与公共 `CGEventPostToPid`
+- 实测（真窗口 88764）：bgclick 四种参数组合 + 先 activate 再点，**全部无效**；
+  同一坐标 `--ghost` 一次生效且 `cursor_restored`
+- 参照 cua-driver 文档：macOS 可信后台指针仅对 Google Chrome 验证通过，其它 Chromium 宿主
+  （QQ小程序）只能走 CDP，而 QQ小程序不开放调试端口 → 该路不可用
+- 结论：默认用 ghost（光标还原）；要零打扰需换环境（另一用户会话/VM、或 Android+uiautomator）
+
 ### 模板库（A）——参考 qq-farm-copilot 的具名匹配
 - `agent/mac/templates/manifest.json` 注册表（name → file/thr/scales）
 - `cvhelper.py --find <png> <name>` / `--list`：多尺度 + NMS，按名字找元素

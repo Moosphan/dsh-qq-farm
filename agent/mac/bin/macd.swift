@@ -615,26 +615,33 @@ case "bgclick":
         return e
     }
 
+    // cua-driver 的做法是「belt+suspenders」：SkyLight 私有路径 + 公共 CGEventPostToPid 都发一遍。
+    // 我们之前只发了 SkyLight，实测对本容器无效；补上公共 API 再试。
+    func postBoth(_ pid: pid_t, _ e: CGEvent) {
+        postToPid(pid, e)          // SkyLight 私有路径（Chromium/Catalyst）
+        e.postToPid(pid)           // 公共 API（AppKit 目标；Swift 里是实例方法）
+    }
+
     let target = CGPoint(x: sx, y: sy)
     let off = CGPoint(x: -1, y: -1)
 
     // 1) mouseMoved@目标
     if let e = makeEvent(.mouseMoved, target, phase: 2, clickState: 0) {
-        postToPid(pid, e); posted += 1; usleep(15_000)
+        postBoth(pid, e); posted += 1; usleep(15_000)
     }
     // 2) primer：屏幕外 down/up
     if withPrimer {
-        if let d = makeEvent(.leftMouseDown, off, phase: 1, clickState: 1) { postToPid(pid, d); usleep(1_000) }
-        if let u = makeEvent(.leftMouseUp, off, phase: 2, clickState: 1) { postToPid(pid, u); posted += 1; usleep(100_000) }
+        if let d = makeEvent(.leftMouseDown, off, phase: 1, clickState: 1) { postBoth(pid, d); usleep(1_000) }
+        if let u = makeEvent(.leftMouseUp, off, phase: 2, clickState: 1) { postBoth(pid, u); posted += 1; usleep(100_000) }
     }
     // 3) 目标 down/up
     for i in 1...clickCount {
         let st = Int64(i)
         if let d = makeEvent(.leftMouseDown, target, phase: 3, clickState: st) {
-            postToPid(pid, d); usleep(1_000)
+            postBoth(pid, d); usleep(1_000)
         }
         if let u = makeEvent(.leftMouseUp, target, phase: 3, clickState: st) {
-            postToPid(pid, u); posted += 1
+            postBoth(pid, u); posted += 1
             if i < clickCount { usleep(80_000) }
         }
     }
