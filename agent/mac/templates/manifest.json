@@ -1,0 +1,155 @@
+{
+  "icon.help": {
+    "file": "help.png",
+    "thr": 0.62,
+    "scales": [
+      0.6,
+      0.7,
+      0.8,
+      0.9,
+      1.0,
+      1.1,
+      1.25
+    ],
+    "category": "icon",
+    "note": "好友列表/头像条：小人铲土 = 需要帮忙"
+  },
+  "icon.steal": {
+    "file": "steal.png",
+    "thr": 0.68,
+    "scales": [
+      0.8,
+      0.9,
+      1.0,
+      1.1,
+      1.25
+    ],
+    "category": "icon",
+    "note": "好友列表：手套+面罩 = 有可偷作物"
+  },
+  "icon.close": {
+    "file": "close_x.png",
+    "thr": 0.78,
+    "scales": [
+      0.9,
+      1.0,
+      1.1
+    ],
+    "category": "icon",
+    "note": "弹窗右上角关闭"
+  },
+  "icon.hand": {
+    "file": "hand.png",
+    "thr": 0.6,
+    "scales": [
+      0.5,
+      0.7,
+      0.9,
+      1.1
+    ],
+    "category": "icon",
+    "note": "摘取工具（旧 UI）"
+  },
+  "btn.harvest": {
+    "file": "btn_harvest.png",
+    "thr": 0.8,
+    "scales": [
+      0.9,
+      1.0,
+      1.1
+    ],
+    "category": "btn",
+    "rect": [
+      380,
+      1110,
+      90,
+      70
+    ],
+    "source": "hv_2.png"
+  },
+  "btn.oneclick_plant": {
+    "file": "btn_oneclick_plant.png",
+    "thr": 0.8,
+    "scales": [
+      0.9,
+      1.0,
+      1.1
+    ],
+    "category": "btn",
+    "rect": [
+      505,
+      1085,
+      90,
+      70
+    ],
+    "source": "pl_0.png"
+  },
+  "btn.steal": {
+    "file": "btn_steal.png",
+    "thr": 0.8,
+    "scales": [
+      0.9,
+      1.0,
+      1.1
+    ],
+    "category": "btn",
+    "rect": [
+      300,
+      1108,
+      100,
+      76
+    ],
+    "source": "g2.png"
+  },
+  "btn.home": {
+    "file": "btn_home.png",
+    "thr": 0.8,
+    "scales": [
+      0.9,
+      1.0,
+      1.1
+    ],
+    "category": "btn",
+    "rect": [
+      700,
+      1125,
+      70,
+      70
+    ],
+    "source": "g2.png"
+  },
+  "btn.visit": {
+    "file": "btn_visit.png",
+    "thr": 0.8,
+    "scales": [
+      0.9,
+      1.0,
+      1.1
+    ],
+    "category": "btn",
+    "rect": [
+      632,
+      516,
+      110,
+      54
+    ],
+    "source": "l1.png"
+  },
+  "btn.oneclick_farm": {
+    "file": "btn_oneclick_farm.png",
+    "thr": 0.8,
+    "scales": [
+      0.9,
+      1.0,
+      1.1
+    ],
+    "category": "btn",
+    "rect": [
+      370,
+      1090,
+      110,
+      70
+    ],
+    "source": "sbp1.png"
+  }
+}

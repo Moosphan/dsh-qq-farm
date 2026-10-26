@@ -591,6 +591,74 @@ def find_icons(bgr, tpl, thr=0.60, x_range=None, y_range=None, scales=(0.6, 0.7,
         out.append((cx, cy, round(sc, 2)))
     return out
 
+
+# ---------- 模板注册表（具名匹配）----------
+# agent/mac/templates/manifest.json:
+#   { "btn.oneclick_farm": {"file": "btn_oneclick_farm.png", "thr": 0.82, "scales": [0.9,1.0,1.1]} }
+# 用名字找元素，不靠坐标猜；新增元素只要裁一张图 + 写一行 manifest。
+
+
+def manifest_path():
+    return Path(__file__).parent / "templates" / "manifest.json"
+
+
+def load_manifest():
+    try:
+        return json.loads(manifest_path().read_text("utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_manifest(data):
+    manifest_path().parent.mkdir(parents=True, exist_ok=True)
+    manifest_path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def template_of(name):
+    """按名字取 (路径, 阈值, 尺度列表)。"""
+    man = load_manifest()
+    ent = man.get(name)
+    if not ent:
+        return None
+    p = Path(__file__).parent / "templates" / ent.get("file", "")
+    return (p, float(ent.get("thr", 0.80)), tuple(ent.get("scales") or (0.9, 1.0, 1.1)))
+
+
+def find_named(bgr, name, x_range=None, y_range=None):
+    """按名字找模板，返回 [(cx, cy, score, w, h)]（多尺度 + NMS）。"""
+    got = template_of(name)
+    if not got:
+        return None
+    path, thr, scales = got
+    tpl = cv2.imread(str(path))
+    if tpl is None:
+        return None
+    hits = {}
+    for sc in scales:
+        t = cv2.resize(tpl, None, fx=sc, fy=sc, interpolation=cv2.INTER_LINEAR)
+        if t.shape[0] > bgr.shape[0] or t.shape[1] > bgr.shape[1]:
+            continue
+        r = cv2.matchTemplate(bgr, t, cv2.TM_CCOEFF_NORMED)
+        ys, xs = np.where(r >= thr)
+        for y, x in zip(ys, xs):
+            cx = int(x + t.shape[1] / 2)
+            cy = int(y + t.shape[0] / 2)
+            if x_range and not (x_range[0] <= cx <= x_range[1]):
+                continue
+            if y_range and not (y_range[0] <= cy <= y_range[1]):
+                continue
+            key = (cx // 8, cy // 8)
+            v = (cx, cy, float(r[y, x]), t.shape[1], t.shape[0])
+            if key not in hits or v[2] > hits[key][2]:
+                hits[key] = v
+    out = []
+    for (cx, cy, sc, tw, th) in sorted(hits.values(), key=lambda v: -v[2]):
+        if any(abs(cx - a) < tw * 0.5 and abs(cy - b) < th * 0.5 for (a, b, _, _, _) in out):
+            continue
+        out.append((cx, cy, round(sc, 3), tw, th))
+    return out
+
+
 def cell_features(bgr, cx, cy, half=None):
     H, W = bgr.shape[:2]
     if half is None:
@@ -695,6 +763,35 @@ def main():
     if len(sys.argv) < 2:
         print(json.dumps({"ok": False, "error": "missing image"}))
         return 1
+    if sys.argv[1] == "--list":
+        print(json.dumps({"ok": True, "names": sorted(load_manifest().keys())}, ensure_ascii=False))
+        return 0
+    if sys.argv[1] == "--find":
+        # 用法: cvhelper.py --find <png> <name> [--x lo,hi] [--y lo,hi]
+        args = sys.argv[2:]
+        if len(args) < 2:
+            print(json.dumps({"ok": False, "error": "usage: --find <png> <name>"}))
+            return 1
+        bgr = load(args[0])
+        name = args[1]
+        xr = yr = None
+        for i, a in enumerate(args):
+            if a == "--x" and i + 1 < len(args):
+                lo, hi = args[i + 1].split(",")
+                xr = (int(lo), int(hi))
+            elif a == "--y" and i + 1 < len(args):
+                lo, hi = args[i + 1].split(",")
+                yr = (int(lo), int(hi))
+        if template_of(name) is None:
+            print(json.dumps({"ok": False, "error": "manifest 里没有 %s" % name,
+                              "names": sorted(load_manifest().keys())}, ensure_ascii=False))
+            return 2
+        hits = find_named(bgr, name, x_range=xr, y_range=yr)
+        print(json.dumps({"ok": True, "name": name,
+                          "matches": [{"cx": c, "cy": y, "score": sc, "w": w, "h": h}
+                                      for (c, y, sc, w, h) in (hits or [])]},
+                         ensure_ascii=False))
+        return 0
     if sys.argv[1] == "--icons":
         # 用法: cvhelper.py --icons <png> [--tpl 模板] [--thr 0.6] [--x 350,430]
         args = sys.argv[2:]

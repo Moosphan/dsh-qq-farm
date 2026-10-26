@@ -599,6 +599,7 @@ class Instance:
             "idleRounds": getattr(self, "idle_rounds", 0),
             "stats": self.stats,
             "event": getattr(self, "event", None),
+            "lastCrop": getattr(self, "last_crop", None),
             "statsToday": (self.daily.get("today") or {}) if
                           (self.daily.get("today") or {}).get("date") == time.strftime("%Y-%m-%d")
                           else {"date": time.strftime("%Y-%m-%d"), "harvest": 0, "plant": 0,
@@ -1389,6 +1390,40 @@ class Agent:
                     break
         return out
 
+    # ── 具名模板匹配（templates/manifest.json）──────────────────────────
+    def find_named(self, inst, name, x_range=None, y_range=None):
+        """按 manifest 里的名字找模板（多尺度 + NMS），返回 [(cx, cy, score)]。"""
+        py = self._cv_python()
+        helper = HERE / "cvhelper.py"
+        if py is None or not helper.exists():
+            return []
+        cmd = [py, str(helper), "--find", str(inst.tmp_png), name]
+        if x_range:
+            cmd += ["--x", "%d,%d" % (int(x_range[0]), int(x_range[1]))]
+        if y_range:
+            cmd += ["--y", "%d,%d" % (int(y_range[0]), int(y_range[1]))]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            data = json.loads(r.stdout.strip().splitlines()[-1])
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError, IndexError):
+            return []
+        if not data.get("ok"):
+            return []
+        return [(float(m["cx"]), float(m["cy"]), float(m["score"])) for m in data.get("matches") or []]
+
+    def click_named(self, inst, name, wait=1.2, verify=True, index=0):
+        """按名字点模板命中处；未命中返回 (False, 原因)。"""
+        hits = self.find_named(inst, name)
+        if not hits:
+            return False, "模板未命中 %s" % name
+        hits.sort(key=lambda h: -h[2])
+        if index >= len(hits):
+            return False, "命中数不足 %s" % name
+        cx, cy, sc = hits[index]
+        ok = self._click_xy(inst, cx, cy, wait=wait, verify=verify)
+        self.push_log(inst, f"模板点击「{name}」({cx:.0f},{cy:.0f}) score={sc:.2f}")
+        return True, f"{name} score={sc:.2f}"
+
     # ── 页面纠偏：点错了自己退回来 ─────────────────────────────────────
     def _ensure_main(self, inst, tries=4, timeout=2.5):
         """确保回到农场主页；进错页（SVIP/仓库/活动/好友）就依次尝试退出。
@@ -1417,6 +1452,9 @@ class Agent:
                 hit = self.mac.find_icon(str(inst.tmp_png), str(ICON_CLOSE), threshold=0.78)
                 if hit:
                     self._click_xy(inst, hit["cx"], hit["cy"], wait=0.9, verify=False)
+                elif self.click_named(inst, "btn.home", wait=1.0, verify=False)[0]:
+                    self.grab(inst)
+                    continue
                 else:
                     # ③ 固定坐标兜底：好友农场/好友列表的「回家」在右下角（OCR 偶尔认不出）
                     w, h = inst.img_size or (824, 1542)
@@ -1477,6 +1515,33 @@ class Agent:
         if cells is None:
             return None
         return sum(1 for c in cells if (c.get("kind") or "empty") in ("empty", "grass", "unknown", None))
+
+    def _crop_name_at(self, inst, cx=None, cy=None):
+        """点开一格读弹窗顶部的作物名（如「草莓」「狗尾草」）。"""
+        W, H = inst.img_size or (822, 1542)
+        self._click_xy(inst, int(cx if cx is not None else W * 0.487),
+                       int(cy if cy is not None else H * 0.545), wait=1.2)
+        if not self.grab(inst):
+            return None
+        # 弹窗结构（实测）：作物名在最上面，下面紧跟「经验 / 收入 / 种子 / 初熟」
+        base = None
+        for b in inst.ocr_blocks:
+            if str(b["text"]).strip() == "经验":
+                base = b["y"]
+                break
+        if base is None:
+            return None
+        best = None
+        for b in inst.ocr_blocks:
+            t = str(b["text"]).strip()
+            if not (1 < len(t) <= 6) or t.isdigit():
+                continue
+            if any(k in t for k in ("经验", "收入", "种子", "发芽", "成熟", "初熟", "小时", "分钟")):
+                continue
+            if 5 < base - b["y"] < 70 and b["x"] < 300:
+                if best is None or b["y"] < best[0]:
+                    best = (b["y"], t)
+        return best[1] if best else None
 
     def _replant(self, inst):
         """收完补种：点空地 → 种子栏 → 依次试种子卡，直到「点卡没经验增长」为止。
@@ -1564,7 +1629,17 @@ class Agent:
                 self._click_xy(inst, arrow[0], arrow[1], wait=0.8, verify=False)
                 self.grab(inst)
         if planted:
-            return 1, f"已补种 {planted} 次"
+            # 校验种下去的是什么：弹窗顶部会显示作物名（曾把「狗尾草」当成草莓种满全田）
+            want = str(inst.settings.get("seedName", "草莓"))
+            got = self._crop_name_at(inst)
+            inst.last_crop = got
+            if got and want and want not in got:
+                self.push_log(inst, f"补种校验失败：实际种的是「{got}」，期望「{want}」"
+                                    f"（seedPage/卡位置需要修正）", level="warn")
+                return 1, f"已补种 {planted} 次，但作物是「{got}」而非「{want}」"
+            if got:
+                self.push_log(inst, f"补种校验通过：作物「{got}」")
+            return 1, f"已补种 {planted} 次（作物 {got or '?'}）"
         return 0, "补种未生效"
 
     def _exp_now(self, inst):
@@ -1836,6 +1911,12 @@ class Agent:
         icons = self._icon_matches(inst, ICON_HELP)
         thieves = self._icon_matches(inst, ICON_STEAL)
         rows = self._friend_rows(inst)
+        if not rows:
+            # OCR 解析不出「拜访」行 → 用模板命中兜底（模板定位比 OCR 稳）
+            hits = sorted(self.find_named(inst, "btn.visit"), key=lambda h: h[1])[:6]
+            rows = [("?", {"x": h[0] - 30, "y": h[1] - 12, "w": 60, "h": 24}) for h in hits]
+            if hits:
+                self.push_log(inst, f"好友列表：OCR 无行，用模板命中 {len(hits)} 个「拜访」")
         if icons or thieves:
             self.push_log(inst, f"图标：可帮 {len(icons)} 个 / 可偷 {len(thieves)} 个")
         targets = []
@@ -2301,6 +2382,14 @@ class Agent:
         if page == "main":
             block = self.find_block(inst, HARVEST_LABELS[0])
             action, label = (block, HARVEST_LABELS[0]) if block else (None, None)
+            if action is None:
+                # OCR 没认出「一键收获」→ 用模板找（模板对图标更稳）
+                if self.click_named(inst, "btn.harvest", wait=1.6):
+                    inst.stats["totalActions"] += 1
+                    self.bump_daily(inst, "harvest")
+                    settle = self._read_settlement(inst)
+                    self.push_state(inst)
+                    return True, ("模板收获完成" + (f"（总价值 {settle[0]}、经验 +{settle[1]}）" if settle else ""))
             if action is None:
                 plan = self.find_block(inst, PLANT_LABELS[0])
                 if plan is not None:
