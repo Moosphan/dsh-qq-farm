@@ -50,26 +50,9 @@
     "category": "icon",
     "note": "摘取工具（旧 UI）"
   },
-  "btn.harvest": {
-    "file": "btn_harvest.png",
-    "thr": 0.8,
-    "scales": [
-      0.9,
-      1.0,
-      1.1
-    ],
-    "category": "btn",
-    "rect": [
-      380,
-      1110,
-      90,
-      70
-    ],
-    "source": "hv_2.png"
-  },
   "btn.oneclick_plant": {
     "file": "btn_oneclick_plant.png",
-    "thr": 0.8,
+    "thr": 0.85,
     "scales": [
       0.9,
       1.0,
@@ -84,26 +67,9 @@
     ],
     "source": "pl_0.png"
   },
-  "btn.steal": {
-    "file": "btn_steal.png",
-    "thr": 0.8,
-    "scales": [
-      0.9,
-      1.0,
-      1.1
-    ],
-    "category": "btn",
-    "rect": [
-      300,
-      1108,
-      100,
-      76
-    ],
-    "source": "g2.png"
-  },
   "btn.home": {
     "file": "btn_home.png",
-    "thr": 0.8,
+    "thr": 0.85,
     "scales": [
       0.9,
       1.0,
@@ -120,7 +86,7 @@
   },
   "btn.visit": {
     "file": "btn_visit.png",
-    "thr": 0.8,
+    "thr": 0.85,
     "scales": [
       0.9,
       1.0,
@@ -135,21 +101,8 @@
     ],
     "source": "l1.png"
   },
-  "btn.oneclick_farm": {
-    "file": "btn_oneclick_farm.png",
-    "thr": 0.8,
-    "scales": [
-      0.9,
-      1.0,
-      1.1
-    ],
-    "category": "btn",
-    "rect": [
-      370,
-      1090,
-      110,
-      70
-    ],
-    "source": "sbp1.png"
+  "_note": {
+    "bottom_buttons": "底部「一键收获/务农/施肥/偷取」图标高度相似，模板会误命中 → 以 OCR 标签为准，不要用模板",
+    "templates_ok": "btn.home / btn.visit / icon.* 可用于图标或文字稳定的元素"
   }
 }

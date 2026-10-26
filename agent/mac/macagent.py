@@ -1678,9 +1678,9 @@ class Agent:
             （注意：刚种下的幼苗看起来和空地一样，不能用 cvhelper 的 empty 判定来复查）
         """
         W, H = inst.img_size or (822, 1542)
-        seed_page = int(inst.settings.get("seedPage", 2) or 2)
+        seed_page = int(inst.settings.get("seedPage", 1) or 1)
         # C3：库存已知时，先确认想要的种子有货；没货就降级到有货的任意种子
-        want_name = str(inst.settings.get("seedName", "草莓"))
+        want_name = str(inst.settings.get("seedName", "") or "")
         stock = getattr(inst, "seeds", None)
         if stock:
             if want_name not in stock:
@@ -1774,7 +1774,7 @@ class Agent:
                 self.grab(inst)
         if planted:
             # 校验种下去的是什么：弹窗顶部会显示作物名（曾把「狗尾草」当成草莓种满全田）
-            want = str(inst.settings.get("seedName", "草莓"))
+            want = str(inst.settings.get("seedName", "") or "")
             got = self._crop_name_at(inst)
             inst.last_crop = got
             if got and want and want not in got:
@@ -2528,12 +2528,17 @@ class Agent:
             action, label = (block, HARVEST_LABELS[0]) if block else (None, None)
             if action is None:
                 # OCR 没认出「一键收获」→ 用模板找（模板对图标更稳）
-                if self.click_named(inst, "btn.harvest", wait=1.6):
-                    inst.stats["totalActions"] += 1
-                    self.bump_daily(inst, "harvest")
+                hit, _why = self.click_named(inst, "btn.harvest", wait=1.6)
+                if hit:
                     settle = self._read_settlement(inst)
-                    self.push_state(inst)
-                    return True, ("模板收获完成" + (f"（总价值 {settle[0]}、经验 +{settle[1]}）" if settle else ""))
+                    if settle:
+                        inst.stats["totalActions"] += 1
+                        self.bump_daily(inst, "harvest")
+                        self.push_state(inst)
+                        return True, f"模板收获完成（总价值 {settle[0]}、经验 +{settle[1]}）"
+                    # 有画面变化但没读到结算 → 很可能是误命中别的按钮，不算成功
+                    self.push_log(inst, "模板命中「一键收获」但没读到结算，判为误命中（阈值可能偏低）",
+                                  level="warn")
             if action is None:
                 plan = self.find_block(inst, PLANT_LABELS[0])
                 if plan is not None:
