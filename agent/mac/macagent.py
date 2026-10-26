@@ -346,8 +346,8 @@ class Mac:
             return None, (out.stderr or out.stdout).strip()[:400]
         return out.stdout, None
 
-    def windows(self):
-        out, err = self._run("winlist")
+    def windows(self, all_spaces=False):
+        out, err = self._run("winlist", *(["--all-spaces"] if all_spaces else []))
         if out is None:
             return []
         rows = []
@@ -365,14 +365,14 @@ class Mac:
         """已禁用：主动 activate 会抢焦点 / 弹授权 / 卡死。仅保留方法名以免旧调用报错。"""
         return None
 
-    def find_game_window(self, title_contains="农场"):
+    def find_game_window(self, title_contains="农场", all_spaces=False):
         """找游戏窗口。
 
         主路径：标题含「农场」且 owner 是 QQ/微信容器。
         兜底：没有屏幕录制权限时 macOS 会把窗口标题隐去（title 为空），
         此时按 owner（QQ小程序 / 微信 / MiniProgram）加尺寸筛选。
         """
-        wins = self.windows()
+        wins = self.windows(all_spaces=all_spaces)
         for w in wins:
             owner = w.get("owner", "")
             title = w.get("title", "")
@@ -806,6 +806,16 @@ class Agent:
         """
         win = self.mac.find_game_window()
         if win is None:
+            # 不在当前桌面？可能是窗口切到别的 Space / 被全屏应用挡在后面。
+            # 这种状态下**不能点击**（点击会落到当前桌面），所以只提示、不建实例。
+            elsewhere = self.mac.find_game_window(all_spaces=True)
+            if elsewhere is not None:
+                nowt = time.time()
+                if nowt - getattr(self, "_offscreen_warn_at", 0) > 120:
+                    self._offscreen_warn_at = nowt
+                    self.push_log(None, "游戏窗口在其它桌面/全屏后面（当前桌面看不到），"
+                                        "为避免点错，暂不操作；请把游戏窗口切到当前桌面", level="warn")
+                return None
             # 窗口不在了：先把僵尸实例清掉（否则面板会一直显示"运行中"，
             # 而它的调度线程还在对已关闭的窗口瞎点）
             try:
