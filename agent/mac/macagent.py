@@ -2526,19 +2526,7 @@ class Agent:
         if page == "main":
             block = self.find_block(inst, HARVEST_LABELS[0])
             action, label = (block, HARVEST_LABELS[0]) if block else (None, None)
-            if action is None:
-                # OCR 没认出「一键收获」→ 用模板找（模板对图标更稳）
-                hit, _why = self.click_named(inst, "btn.harvest", wait=1.6)
-                if hit:
-                    settle = self._read_settlement(inst)
-                    if settle:
-                        inst.stats["totalActions"] += 1
-                        self.bump_daily(inst, "harvest")
-                        self.push_state(inst)
-                        return True, f"模板收获完成（总价值 {settle[0]}、经验 +{settle[1]}）"
-                    # 有画面变化但没读到结算 → 很可能是误命中别的按钮，不算成功
-                    self.push_log(inst, "模板命中「一键收获」但没读到结算，判为误命中（阈值可能偏低）",
-                                  level="warn")
+            # 底部按钮（收获/务农/施肥/偷取）图标高度相似，模板会误命中 → 只用 OCR 标签判断
             if action is None:
                 plan = self.find_block(inst, PLANT_LABELS[0])
                 if plan is not None:
