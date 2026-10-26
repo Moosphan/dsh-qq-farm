@@ -600,6 +600,8 @@ class Instance:
             "stats": self.stats,
             "event": getattr(self, "event", None),
             "lastCrop": getattr(self, "last_crop", None),
+            "seeds": getattr(self, "seeds", None),
+            "seedsRaw": getattr(self, "seeds_raw", None),
             "statsToday": (self.daily.get("today") or {}) if
                           (self.daily.get("today") or {}).get("date") == time.strftime("%Y-%m-%d")
                           else {"date": time.strftime("%Y-%m-%d"), "harvest": 0, "plant": 0,
@@ -1400,6 +1402,53 @@ class Agent:
                     break
         return out
 
+    # ── 仓库种子（C）──────────────────────────────────────────────────
+    def read_seeds(self, inst):
+        """读仓库「种子」页，尽力解析 {名称: 数量}。
+
+        UI 布局未知时也不报错：把 OCR 到的原文一并存进 `seedsRaw`，方便后续适配。
+        只读操作，不点出售/购买。
+        """
+        self._ensure_main(inst)
+        W, H = inst.img_size or (822, 1542)
+        self._click_xy(inst, int(W * 0.057), int(H * 0.938), wait=1.6)   # 底部「仓库」
+        if not self._wait_for(inst, ["格子上限", "果实", "种子"], timeout=4.0, step=0.35):
+            self.push_log(inst, "仓库：打不开（没看到「格子上限/果实/种子」）", level="warn")
+            return 0, "打不开仓库"
+        # 切「种子」标签
+        for label in ("种子", "种子仓库"):
+            b = self.find_block(inst, label, min_conf=0.40)
+            if b:
+                self._tap_text(inst, label, wait=1.3)
+                break
+        if not self.grab(inst):
+            return 0, "抓帧失败"
+        texts = [(str(b["text"]).strip(), b["x"], b["y"], b["w"], b["h"]) for b in inst.ocr_blocks]
+        seeds, raw = {}, [t[0] for t in texts if t[0]]
+        # 数量 = 纯数字；名称 = 同排左侧最近的中文块
+        for (t, x, y, w, h) in texts:
+            if not t.isdigit():
+                continue
+            count = int(t)
+            best = None
+            for (t2, x2, y2, w2, h2) in texts:
+                if t2 == t or t2.isdigit() or len(t2) < 2 or len(t2) > 8:
+                    continue
+                if abs(y2 - y) > 60:
+                    continue
+                if not (x2 < x and 0 < x - x2 < 260):
+                    continue
+                if best is None or x2 > best[1]:
+                    best = (t2, x2)
+            if best:
+                seeds[best[0]] = seeds.get(best[0], 0) + count
+        inst.seeds = seeds
+        inst.seeds_raw = raw[:40]
+        self.push_log(inst, f"仓库种子：{len(seeds)} 种 → " +
+                            "、".join(f"{k}×{v}" for k, v in list(seeds.items())[:8]))
+        self._ensure_main(inst, tries=3)
+        return (1, "已读取种子库存") if seeds else (0, "仓库里没解析出种子")
+
     # ── 具名模板匹配（templates/manifest.json）──────────────────────────
     def find_named(self, inst, name, x_range=None, y_range=None):
         """按 manifest 里的名字找模板（多尺度 + NMS），返回 [(cx, cy, score)]。"""
@@ -1564,6 +1613,19 @@ class Agent:
         """
         W, H = inst.img_size or (822, 1542)
         seed_page = int(inst.settings.get("seedPage", 2) or 2)
+        # C3：库存已知时，先确认想要的种子有货；没货就降级到有货的任意种子
+        want_name = str(inst.settings.get("seedName", "草莓"))
+        stock = getattr(inst, "seeds", None)
+        if stock:
+            if want_name not in stock:
+                alt = max(stock.items(), key=lambda kv: kv[1])[0]
+                self.push_log(inst, f"补种：库存里没「{want_name}」，改用最多的「{alt}」×{stock[alt]}",
+                              level="warn")
+                inst.settings["seedName"] = alt
+            elif stock[want_name] <= 0:
+                alt = max(stock.items(), key=lambda kv: kv[1])[0]
+                self.push_log(inst, f"补种：「{want_name}」已用完，改用「{alt}」", level="warn")
+                inst.settings["seedName"] = alt
         card_fx = (0.16, 0.32, 0.48, 0.63, 0.79)
         arrow = (int(W * 0.92), int(H * 0.682))
 
