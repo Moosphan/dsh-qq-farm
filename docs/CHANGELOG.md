@@ -1,5 +1,19 @@
 # 更新日志
 
+## 未发布（2026-10-26）
+
+### 模板库（A）——参考 qq-farm-copilot 的具名匹配
+- `agent/mac/templates/manifest.json` 注册表（name → file/thr/scales）
+- `cvhelper.py --find <png> <name>` / `--list`：多尺度 + NMS，按名字找元素
+- `scripts/crop_template.py`：裁模板 → 写 manifest → `--verify` 自检 + `--preview` 叠加图
+- 已采集：btn.harvest / btn.oneclick_farm / btn.oneclick_plant / btn.steal / btn.home / btn.visit、
+  icon.help / icon.steal / icon.close / icon.hand（自检 1.0）
+- agent：`find_named()` / `click_named()`；收获、一键务农、回家、好友「拜访」均模板优先、OCR 兜底
+
+### 点击模式（B）
+- 默认 `clickMode=auto` = **ghost → warp**（每级校验画面，成功即记忆）
+- 实测：`macd bgclick`（SkyLight 真后台）对本容器**无效**；`ghost` 有效且光标还原
+
 ## v0.2.0（2026-10-24）
 
 好友自动化、补种闭环、面板可观测性。

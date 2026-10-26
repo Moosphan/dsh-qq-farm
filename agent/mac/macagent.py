@@ -614,8 +614,12 @@ class Agent:
     #   "auto"（默认）= 先 ghost（点完把光标还原，尽量不打扰用户），失败才升级到 warp
     #   "ghost" = 只用幽灵点击；"warp" = 只用真实光标（最可靠但会挪光标）
     click_mode = "auto"
-    # auto 模式下"当前认定的有效模式"：bg（真后台，不动光标）→ ghost（还原光标）→ warp
-    effective_click_mode = "bg"
+    # auto 模式的起点：ghost（点完把光标还原）。
+    # 实测 2026-10-26：`macd bgclick`（SkyLight 真后台）对本容器**无效**
+    #   —— 三种参数（primer / --no-primer / --count 2）画面都无变化；
+    #   而 `--ghost` 一次就生效且光标被还原。所以 bg 只作为显式选项保留，
+    #   auto 链从 ghost 开始，失败才升级 warp。
+    effective_click_mode = "ghost"
 
     def __init__(self, mac, fps=2.0, interval=2.5, allow_plant=True,
                  guard_idle=2.0, allow_focus_steal=False):
@@ -1265,7 +1269,9 @@ class Agent:
 
     def _click_changed(self, inst, sx, sy, wait=1.2, repeat=1, gap=0.0):
         """点击并校验画面是否变；auto 模式按 bg → ghost → warp 逐级升级。"""
-        chain = ["bg", "ghost", "warp"] if self.click_mode == "auto" else [self.click_mode]
+        # auto：ghost → warp（bg 对本容器无效，仅在显式 clickMode=bg 时使用）
+        chain = (["ghost", "warp"] if self.effective_click_mode != "bg"
+                 else ["bg", "ghost", "warp"]) if self.click_mode == "auto" else [self.click_mode]
         # 从"已认定有效"的那级开始试
         if self.click_mode == "auto" and self.effective_click_mode in chain:
             chain = chain[chain.index(self.effective_click_mode):]

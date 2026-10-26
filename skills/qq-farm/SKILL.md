@@ -218,3 +218,13 @@ for round in 1..6:
   （例如 `qq-64312` 的 `.cache-64312.png`），拿到的是一张**永远不动的旧图**，
   会得出"点了没反应"的错误结论（这次就因此误判了 40 分钟）。
   正确做法：先 `GET /v1/instances` 拿当前 id，再取 `/v1/instances/<id>/frame` 和对应 `.cache-<wid>.png`。
+
+### 点击模式实测结论（2026-10-26）
+| 模式 | 机制 | 本容器实测 |
+|---|---|---|
+| `bg`（真后台） | `macd bgclick`：SkyLight `SLEventPostToPid` + Chromium primer + 窗口路由 | **无效**（primer / `--no-primer` / `--count 2` 三种参数，画面都无变化）|
+| `ghost` | `macd click --system --ghost`：点击后把光标还原 | **有效**，且光标被还原 |
+| `warp` | `macd click --system --warp`：真实光标 | 有效，但会挪用户鼠标 |
+
+→ 默认 `clickMode=auto` 的链路是 **ghost → warp**（失败才升级）。要完全不打扰用户只能靠 ghost，
+   因为本容器不支持真后台点击（Windows 上 copilot 用 `SendMessage` 可行，macOS 这条容器不行）。
