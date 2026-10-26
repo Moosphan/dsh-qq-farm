@@ -1602,6 +1602,62 @@ class Agent:
                     best = (b["y"], t)
         return best[1] if best else None
 
+    def _open_seed_bar_any(self, inst):
+        """挨个试格心，直到唤出种子栏（返回 True 表示「一键种植」出现了）。"""
+        W, H = inst.img_size or (822, 1542)
+        cells = self._cv_cells(inst) or []
+        order = ([c for c in cells if (c.get("kind") or "") == "empty"]
+                 + [c for c in cells if (c.get("kind") or "") != "empty"])[:12]
+        probes = [(int(c["cx"]), int(c["cy"])) for c in order] or [
+            (int(W * 0.487), int(H * 0.570)), (int(W * 0.42), int(H * 0.605)),
+            (int(W * 0.55), int(H * 0.605))]
+        for (x, y) in probes:
+            self._click_xy(inst, x, y, wait=1.2)
+            if not self.grab(inst):
+                return False
+            if self.find_block(inst, "一键种植", min_conf=0.40):
+                return True
+        return False
+
+    def plant_seed(self, inst, name=None):
+        """按名字种：模板命中种子卡 → 点 → 读弹窗作物名校验。
+
+        没配 `seed.<name>` 模板时返回 False（调用方退回角标流程）。
+        模板未命中时**绝不乱点**（这是上次把狗尾草当草莓的教训）。
+        """
+        name = str(name or inst.settings.get("seedName", "草莓"))
+        tpl = "seed." + name
+        if not self.find_named(inst, tpl):
+            return False, f"没有模板 {tpl}（先去 C1 校准 + 裁模板）"
+        if not self._open_seed_bar_any(inst):
+            return False, "打不开种子栏"
+        hits = self.find_named(inst, tpl)
+        if not hits:
+            # 可能要翻页：按 seedPage 翻页后再找
+            W, H = inst.img_size or (822, 1542)
+            for _ in range(max(0, int(inst.settings.get("seedPage", 2) or 2) - 1)):
+                self._click_xy(inst, int(W * 0.92), int(H * 0.682), wait=0.9, verify=False)
+                self.grab(inst)
+            hits = self.find_named(inst, tpl)
+        if not hits:
+            return False, f"当前页没找到 {tpl}"
+        cx, cy, sc = sorted(hits, key=lambda h: -h[2])[0]
+        before = self._exp_now(inst)
+        self._click_xy(inst, cx, cy, wait=1.7)
+        if not self.grab(inst):
+            return False, "抓帧失败"
+        after = self._exp_now(inst)
+        got = self._crop_name_at(inst)
+        inst.last_crop = got
+        if got and name not in got:
+            self.push_log(inst, f"按模板种失败：实际是「{got}」而非「{name}」", level="warn")
+            return False, f"作物不符（{got}）"
+        if before is not None and after is not None and after <= before and not got:
+            return False, "点了没经验增长、也读不到作物名"
+        self.bump_daily(inst, "plant")
+        self.push_log(inst, f"按模板种「{name}」成功（score={sc:.2f}，作物={got or '?'}）")
+        return True, f"已种 {name}"
+
     def _replant(self, inst):
         """收完补种：点空地 → 种子栏 → 依次试种子卡，直到「点卡没经验增长」为止。
 
@@ -1673,6 +1729,12 @@ class Agent:
                 return 0
             return int(after - before)
 
+        # A4b：配了种子模板就按名字种（可校验），否则走角标流程
+        if self.find_named(inst, "seed." + want_name):
+            ok, why = self.plant_seed(inst, want_name)
+            if ok:
+                return 1, why
+            self.push_log(inst, f"按模板种失败（{why}），退回角标流程", level="warn")
         if not open_bar():
             return 0, "没弹出种子栏"
         for _ in range(max(0, seed_page - 1)):
