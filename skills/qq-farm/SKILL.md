@@ -228,3 +228,15 @@ for round in 1..6:
 
 → 默认 `clickMode=auto` 的链路是 **ghost → warp**（失败才升级）。要完全不打扰用户只能靠 ghost，
    因为本容器不支持真后台点击（Windows 上 copilot 用 `SendMessage` 可行，macOS 这条容器不行）。
+
+### 不打扰用户的点击方案调研（2026-10-26 实测）
+| 方案 | 原理 | 实测结果 |
+|---|---|---|
+| `macd bgclick` | SkyLight `SLEventPostToPid` + Chromium primer + 窗口路由 | ❌ 无效（primer/--no-primer/--count 2 三种都试过，画面无变化）|
+| `macd click --ghost` | CGEvent + 点完把光标还原 | ✅ **有效**，日志 `cursor_restored` 可见光标被还原 |
+| `macd click --warp` | CGEvent + 真实光标 | ✅ 有效，但会挪用户鼠标 |
+| **AX 无障碍（AXPress）** | `axenh` 开 Chromium 可访问性后遍历 AX 树 | ❌ 树里只有嵌套 `AXGroup`，**没有任何按钮/文字元素**（canvas 渲染），按不到 |
+| 协议层（Penty-d/qq-farm-bot-ui） | Protobuf 直连游戏服务器 | 精度最高，但需登录态、封号风险，且不是"操作界面" |
+
+结论：macOS 上能做到的最"不打扰"方案就是 **ghost**（点完光标瞬间还原）；
+真正零打扰只能在协议层或换 Android + `uiautomator`（元素级精确点击）实现。

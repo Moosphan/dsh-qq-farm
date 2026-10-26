@@ -1292,6 +1292,10 @@ class Agent:
             mode = self.effective_click_mode
         if mode != "bg":
             self.mac.activate(inst.pid)     # bg 模式不需要激活，也就不抢焦点
+        # 实测：ghost 单击常常被"第一次点击只激活窗口"吃掉（好友列表点「拜访」毫无反应），
+        # 双击才稳；warp 单击即可，重复点可能触发别的行为。
+        if mode == "ghost" and repeat < 2:
+            repeat, gap = 2, max(gap, 0.12)
         self.mac.click(inst.pid, sx, sy, mode=mode, wid=inst.wid, repeat=repeat, gap=gap)
         return mode
 
@@ -2119,12 +2123,18 @@ class Agent:
         for k in range(min(max_friends, 12)):
             if inst.stop_flag.is_set() or self.user_busy_reason(inst):
                 break
-            # 进农场后先看清楚是「一键偷取」还是「一键务农」，点图标中心，再校验
+            # 进农场后先等页面加载（好友农场比主页慢，1.2s 常常不够 → 按钮还没出现）
+            if not self._wait_for(inst, [LABEL_HOME, LABEL_STEAL, LABEL_HELP], timeout=5.0, step=0.3):
+                self.push_log(inst, f"好友「{here if 'here' in dir() else '?'}」：农场没加载出来，跳过",
+                              level="warn")
+                self.grab(inst)
             self.grab(inst)
             here = self._farm_header_name(inst) or (targets[k][0] if k < len(targets) else "")
             has_steal = self.find_block(inst, LABEL_STEAL) is not None
             has_help = self.find_block(inst, LABEL_HELP) is not None
             btn = self._bottom_button(inst)
+            self.push_log(inst, f"好友「{here}」：偷取={has_steal} 务农={has_help} 按钮={btn[0] if btn else '无'}",
+                          level="debug")
             if btn is not None:
                 self._click_xy(inst, btn[1], btn[2], wait=1.0, verify=False, activate=False)
             else:
