@@ -1413,51 +1413,66 @@ class Agent:
         return out
 
     # ── 仓库种子（C）──────────────────────────────────────────────────
-    def read_seeds(self, inst):
-        """读仓库「种子」页，尽力解析 {名称: 数量}。
+    # 注意：**不能**把「种子」放进跳过词——每种子的名字都以「…种子」结尾（曾因此全部读不出来）
+    _SEED_NAME_SKIP = ("单价", "成熟", "可收", "季产", "经验", "收入", "概率", "获得",
+                       "出售", "批量", "锁定", "格子上限", "果实：", "道具")
 
-        UI 布局未知时也不报错：把 OCR 到的原文一并存进 `seedsRaw`，方便后续适配。
-        只读操作，不点出售/购买。
+    def _seed_name_from_panel(self, inst):
+        """从仓库详情面板读种子名（实测在面板最上方，y≈0.71H 附近的中文块）。"""
+        H = (inst.img_size or (892, 1662))[1]
+        best = None
+        for b in inst.ocr_blocks:
+            t = str(b["text"]).strip()
+            if not (3 <= len(t) <= 10):
+                continue
+            if any(k in t for k in self._SEED_NAME_SKIP):
+                continue
+            if 0.66 * H < b["y"] < 0.78 * H and b["x"] < 0.55 * (inst.img_size[0]):
+                if best is None or b["y"] < best[0]:
+                    best = (b["y"], t)
+        return best[1] if best else None
+
+    def read_seeds(self, inst):
+        """读仓库「种子」页：逐槽点开 → 详情面板名称 + 槽位数量 → {名称: 数量}。
+
+        实测布局（892×1662）：
+          标签 果实/超变果实/种子/道具 在 y≈0.18H；卡片 5 列，数量在 y≈0.35H 一带；
+          底部详情面板给出「名称 / 单价 / 成熟 / 可收 / 经验 / 收入」（含「出售」按钮＝红线，不点）。
         """
         self._ensure_main(inst)
-        W, H = inst.img_size or (822, 1542)
-        self._click_xy(inst, int(W * 0.057), int(H * 0.938), wait=1.6)   # 底部「仓库」
-        if not self._wait_for(inst, ["格子上限", "果实", "种子"], timeout=4.0, step=0.35):
-            self.push_log(inst, "仓库：打不开（没看到「格子上限/果实/种子」）", level="warn")
+        W, H = inst.img_size or (892, 1662)
+        self._click_xy(inst, int(W * 0.060), int(H * 0.938), wait=1.6)     # 底部「仓库」
+        if not self._wait_for(inst, ["格子上限", "果实"], timeout=4.0, step=0.35):
+            self.push_log(inst, "仓库：打不开", level="warn")
             return 0, "打不开仓库"
-        # 切「种子」标签
-        for label in ("种子", "种子仓库"):
-            b = self.find_block(inst, label, min_conf=0.40)
-            if b:
-                self._tap_text(inst, label, wait=1.3)
-                break
+        tab = self.find_block(inst, "种子", min_conf=0.40)
+        if tab is not None:
+            self._tap_text(inst, "种子", wait=1.3)
         if not self.grab(inst):
             return 0, "抓帧失败"
-        texts = [(str(b["text"]).strip(), b["x"], b["y"], b["w"], b["h"]) for b in inst.ocr_blocks]
-        seeds, raw = {}, [t[0] for t in texts if t[0]]
-        # 数量 = 纯数字；名称 = 同排左侧最近的中文块
-        for (t, x, y, w, h) in texts:
-            if not t.isdigit():
+        # 槽位数量 = 网格里的纯数字（y 在 0.30~0.45H）
+        slots = []
+        for b in inst.ocr_blocks:
+            t = str(b["text"]).strip()
+            if t.isdigit() and 0.26 * H < b["y"] < 0.52 * H and b["w"] < 90:
+                slots.append((int(b["x"] + b["w"] / 2), int(b["y"] - 55), int(t)))
+        slots.sort(key=lambda s: (s[1] // 40, s[0]))
+        seeds, seen = {}, set()
+        for (cx, cy, cnt) in slots[:20]:
+            self._click_xy(inst, cx, cy, wait=1.0)
+            if not self.grab(inst):
+                break
+            name = self._seed_name_from_panel(inst)
+            if not name or name in seen:
                 continue
-            count = int(t)
-            best = None
-            for (t2, x2, y2, w2, h2) in texts:
-                if t2 == t or t2.isdigit() or len(t2) < 2 or len(t2) > 8:
-                    continue
-                if abs(y2 - y) > 60:
-                    continue
-                if not (x2 < x and 0 < x - x2 < 260):
-                    continue
-                if best is None or x2 > best[1]:
-                    best = (t2, x2)
-            if best:
-                seeds[best[0]] = seeds.get(best[0], 0) + count
+            seen.add(name)
+            seeds[name] = seeds.get(name, 0) + cnt
+            self.push_log(inst, f"仓库种子：{name} × {cnt}")
         inst.seeds = seeds
-        inst.seeds_raw = raw[:40]
-        self.push_log(inst, f"仓库种子：{len(seeds)} 种 → " +
-                            "、".join(f"{k}×{v}" for k, v in list(seeds.items())[:8]))
+        self.push_log(inst, f"仓库种子：共 {len(seeds)} 种 → " +
+                            "、".join(f"{k}×{v}" for k, v in list(seeds.items())[:10]))
         self._ensure_main(inst, tries=3)
-        return (1, "已读取种子库存") if seeds else (0, "仓库里没解析出种子")
+        return (1, "已读取种子库存") if seeds else (0, "没解析出种子")
 
     # ── 具名模板匹配（templates/manifest.json）──────────────────────────
     def find_named(self, inst, name, x_range=None, y_range=None):
